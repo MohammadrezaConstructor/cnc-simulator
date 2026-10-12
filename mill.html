@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MillLab CNC Simulator</title>
+    <meta name="description" content="Educational CNC milling simulator: Fanuc-style G-code, 3D material removal on a vertical machining centre, drilling cycles, cutter compensation, lessons and graded exercises." />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23232a33'/%3E%3Crect x='13' y='3' width='6' height='14' fill='%23f2b33d'/%3E%3Crect x='4' y='20' width='24' height='8' fill='%23c9ced6'/%3E%3C/svg%3E" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <div class="brand">
+          <svg viewBox="0 0 32 32" width="22" height="22" aria-hidden="true"><rect x="4" y="19" width="24" height="9" rx="1" fill="currentColor" opacity=".55"/><rect x="13" y="3" width="6" height="14" fill="var(--accent)"/></svg>
+          <span>MillLab</span><small>CNC milling simulator</small>
+        </div>
+        <nav class="seg small machine-switch" aria-label="Machine">
+          <a href="index.html" id="toLathe">Lathe</a><a aria-current="page" class="on">Mill</a>
+        </nav>
+        <nav class="menu">
+          <button data-act="examples">Examples</button>
+          <button data-act="exercises">Exercises</button>
+          <button data-act="lessons">Lessons</button>
+          <button data-act="reference">Reference</button>
+          <button data-act="wizard">Wizard</button>
+          <span class="sep"></span>
+          <button data-act="tools">Tools &amp; offsets</button>
+          <button data-act="stock">Stock</button>
+          <button data-act="calc">Calculator</button>
+          <button data-act="settings">Settings</button>
+          <span class="sep"></span>
+          <button data-act="new">New</button>
+          <button data-act="open">Open</button>
+          <button data-act="save">Save</button>
+          <button data-act="sound" id="soundBtn" aria-pressed="false">Sound off</button>
+          <button data-act="help">?</button>
+          <button data-act="theme" class="icon" title="Light / dark theme" aria-label="Toggle theme">◐</button>
+        </nav>
+      </header>
+
+      <main class="layout">
+        <section class="pane editor-pane">
+          <div class="pane-head">
+            <span class="pane-title" id="progTitle">Program</span>
+            <span class="badges"><span class="badge err" id="errCount">0</span><span class="badge warn" id="warnCount">0</span><span class="badge info" id="infoCount">0</span></span>
+          </div>
+          <div id="exerciseCard" class="exercise-card hidden"></div>
+          <div id="editor" class="editor"></div>
+          <div class="explain">
+            <div class="explain-head">Block explanation <small>(move the cursor to a line)</small></div>
+            <div class="explain-body" id="explainBody"></div>
+          </div>
+        </section>
+
+        <section class="pane view-pane">
+          <div class="view-toolbar">
+            <div class="seg" id="viewSeg">
+              <button data-view="top">Top</button><button data-view="front">Front</button><button data-view="side">Side</button><button data-view="3d" class="on">3D</button><button data-view="split">Split</button>
+            </div>
+            <div class="opts" id="opts2d">
+              <label><input type="checkbox" data-opt="showPath" checked />Path</label>
+              <label><input type="checkbox" data-opt="showRapids" checked />Rapids</label>
+              <label><input type="checkbox" data-opt="showTool" checked />Tool</label>
+              <label class="sec-ctl">Section <input type="range" id="secPos" min="0" max="100" value="50" step="0.5" /><b id="secPosV"></b></label>
+            </div>
+            <div class="opts" id="opts3d">
+              <label><input type="checkbox" id="opt3dPath" checked />Path</label>
+              <button data-cam="iso">Iso</button><button data-cam="front">Front</button><button data-cam="top">Top</button><button data-cam="side">Side</button>
+            </div>
+            <button id="fitBtn">Fit</button>
+            <button id="shotBtn">Image</button>
+          </div>
+          <div class="views" id="views" data-mode="3d">
+            <div class="view" id="view2d"></div>
+            <div class="view" id="view3d"></div>
+            <div class="legend" id="legend">
+              <span><i class="lg rapid"></i>G00 rapid</span><span><i class="lg feed"></i>G01 feed</span><span><i class="lg arc"></i>G02/G03</span><span class="depth-key"><i class="dk"></i>shallow → deep</span>
+            </div>
+            <div class="alarm-banner hidden" id="alarmBanner"></div>
+          </div>
+          <div class="status-strip"><span id="stripBlock">Ready</span><span id="stripLabel"></span></div>
+          <div class="bottom">
+            <div class="tabs" id="bottomTabs">
+              <button data-tab="messages" class="on">Messages</button>
+              <button data-tab="check">Program check <span id="checkCount"></span></button>
+              <button data-tab="ops">Operations</button>
+              <button data-tab="inspect">Inspection</button>
+              <button data-tab="charts">Charts</button>
+            </div>
+            <div class="tab-body" id="tab-messages"><ul class="msglist" id="msgList"></ul></div>
+            <div class="tab-body hidden" id="tab-check"><ul class="msglist" id="checkList"></ul></div>
+            <div class="tab-body hidden" id="tab-ops"><div id="opsTable"></div></div>
+            <div class="tab-body hidden" id="tab-inspect"><div id="inspectBody"><p class="muted">Load an exercise, run your program, then press <b>Check part</b>.</p></div></div>
+            <div class="tab-body hidden charts-body" id="tab-charts">
+              <div class="charts-head"><span class="muted small">Machine time on the horizontal axis. Hover for values, click to jump the simulation to that moment.</span><button id="chartTableBtn" aria-pressed="false">Table</button></div>
+              <div class="chart-host" id="chartHost"></div>
+              <div class="chart-table hidden" id="chartTable"></div>
+            </div>
+          </div>
+        </section>
+
+        <aside class="pane control-pane">
+          <div class="mode seg" id="modeSeg">
+            <button data-mode="AUTO" class="on">AUTO</button><button data-mode="MDI">MDI</button><button data-mode="JOG">JOG</button>
+          </div>
+          <div class="dro">
+            <div class="dro-row"><span class="ax">X</span><span class="val" id="droX">0.000</span><span class="unit">mm</span></div>
+            <div class="dro-row"><span class="ax">Y</span><span class="val" id="droY">0.000</span><span class="unit">mm</span></div>
+            <div class="dro-row"><span class="ax">Z</span><span class="val" id="droZ">0.000</span><span class="unit" id="droZunit">tip</span></div>
+            <div class="dro-sub"><span>Dist. to go</span><span id="droDtg">X 0 Y 0 Z 0</span></div>
+            <div class="dro-grid">
+              <div><label>Tool</label><b id="droT">T01</b></div>
+              <div><label>S rpm</label><b id="droRpm">0</b></div>
+              <div><label>Vc m/min</label><b id="droVc">0</b></div>
+              <div><label>F mm/min</label><b id="droFeed">0</b></div>
+              <div><label>fz mm</label><b id="droFz">–</b></div>
+              <div><label>Cut</label><b id="droEng">–</b></div>
+            </div>
+            <div class="modal-line" id="droModal">G00 G17 G21 G40 G49 G80 G90 G94 G54</div>
+            <div class="modal-line conv" id="droConv" title="Work zero and programming conventions (Workpiece and Settings dialogs)"></div>
+            <div class="leds">
+              <span class="led" id="ledSpindle">SPINDLE</span><span class="led" id="ledCoolant">COOLANT</span><span class="led" id="ledCut">CUTTING</span><span class="led" id="ledStatus">IDLE</span>
+            </div>
+          </div>
+          <div class="quick-btns">
+            <button class="quick" id="qComp" aria-pressed="false" title="Automatic tool compensation: after M06 the tool's length is applied without G43 H…, and G41/G42 use the tool radius without D (wear offsets still count)"><span class="qt"><i class="qled"></i>AUTO TOOL COMP</span><span class="qs" id="qCompS">OFF · G43 H / D</span></button>
+            <button class="quick" id="qZero" aria-haspopup="dialog" aria-expanded="false" title="Set the work zero G54 to a top corner or the centre of the block"><span class="qt"><i class="qzero"></i>WORK ZERO G54</span><span class="qs" id="qZeroS">front left · Z0 finished</span></button>
+          </div>
+          <div class="cycle-btns">
+            <button class="btn-start" id="btnStart">▶ CYCLE START</button>
+            <button class="btn-hold" id="btnHold">❚❚ FEED HOLD</button>
+            <button class="btn-reset" id="btnReset">■ RESET</button>
+          </div>
+          <div class="toggles">
+            <label class="tog"><input type="checkbox" id="tSingle" /><span>SINGLE BLOCK</span></label>
+            <label class="tog"><input type="checkbox" id="tOpt" checked /><span>OPT. STOP</span></label>
+            <label class="tog"><input type="checkbox" id="tSkip" /><span>BLOCK SKIP</span></label>
+          </div>
+          <div class="ovr">
+            <div class="ovr-row"><label>Feed override</label><input type="range" id="ovFeed" min="0" max="150" step="10" value="100" /><b id="ovFeedV">100%</b></div>
+            <div class="ovr-row"><label>Rapid override</label><div class="seg small" id="ovRapid"><button data-v="0.05">F0</button><button data-v="0.25">25</button><button data-v="0.5">50</button><button data-v="1" class="on">100</button></div></div>
+            <div class="ovr-row"><label>Spindle override</label><input type="range" id="ovSpindle" min="50" max="120" step="10" value="100" /><b id="ovSpindleV">100%</b></div>
+            <div class="ovr-row"><label>Simulation speed</label><input type="range" id="simSpeed" min="0" max="8" step="1" value="4" /><b id="simSpeedV">×4</b></div>
+          </div>
+          <div class="load">
+            <div class="load-row"><label>Spindle load</label><div class="bar"><i id="loadBar"></i></div><b id="loadV">0.0 kW</b></div>
+            <div class="load-row"><label>Removal rate</label><b id="mrrV">0.0 cm³/min</b></div>
+            <div class="load-row"><label>Cycle time</label><b id="timeV">0:00.0 / 0:00.0</b></div>
+          </div>
+          <div class="mode-panel" id="panelAUTO">
+            <div class="timeline">
+              <div class="tl-row"><button id="tlBack" title="Rewind to the previous block">⏮</button><input type="range" id="tlSlider" min="0" max="1000" value="0" aria-label="Program timeline" /><button id="tlFwd" title="Run one block">⏭</button></div>
+              <div class="tl-track" id="tlTrack" aria-hidden="true"></div>
+              <div class="tl-info"><span id="tlTime">0:00.0</span><span id="tlBlock" class="muted"></span></div>
+            </div>
+            <button id="btnInstant" class="wide">⏩ Run to end (instant)</button>
+            <button id="btnNewStock" class="wide">⟲ New block &amp; home</button>
+            <button id="btnCheck" class="wide accent">✓ Check part</button>
+          </div>
+          <div class="mode-panel hidden" id="panelMDI">
+            <label class="muted">Type blocks and press CYCLE START (modal state is kept):</label>
+            <textarea id="mdiText" rows="4" spellcheck="false">T02 M06
+S8000 M03
+G43 H02 G00 X0 Y0 Z50.</textarea>
+            <div class="mdi-hist" id="mdiHist"></div>
+          </div>
+          <div class="mode-panel hidden" id="panelJOG">
+            <div class="jog-grid">
+              <button data-jog="z+">Z+</button><button data-jog="y+">Y+</button><button data-jog="rapid" id="jogRapid">RAPID</button>
+              <button data-jog="x-">X−</button><button data-jog="z-">Z−</button><button data-jog="x+">X+</button>
+              <span></span><button data-jog="y-">Y−</button><span></span>
+            </div>
+            <div class="ovr-row"><label>Increment</label><div class="seg small" id="jogInc"><button data-v="0">cont.</button><button data-v="0.01">0.01</button><button data-v="0.1">0.1</button><button data-v="1" class="on">1</button><button data-v="10">10</button></div></div>
+            <div class="ovr-row"><label>Jog feed</label><input type="range" id="jogFeed" min="10" max="3000" step="10" value="500" /><b id="jogFeedV">500 mm/min</b></div>
+            <div class="ovr-row"><label>Spindle</label><div class="seg small"><button id="spCW">CW</button><button id="spStop">STOP</button><button id="spCCW">CCW</button></div><input type="number" id="spRpm" value="3000" min="0" max="12000" step="100" class="num" /></div>
+            <div class="ovr-row"><label>Tool</label><select id="jogTool"></select><button id="jogCool">Coolant</button></div>
+            <p class="muted small">Keyboard: arrows = X/Y, PgUp/PgDn = Z (Shift = rapid). With the spindle on the tool really cuts.</p>
+          </div>
+        </aside>
+      </main>
+      <input type="file" id="fileInput" accept=".nc,.txt,.tap,.cnc,.min,.gcode,.ngc" hidden />
+      <div id="dialogRoot"></div>
+      <div id="toasts" class="toasts"></div>
+    </div>
+    <script type="module" src="/src/mill/main.ts"></script>
+  </body>
+</html>
