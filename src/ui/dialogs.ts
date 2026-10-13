@@ -1,7 +1,7 @@
 import { h, openDialog, toast, fill, download } from './dom';
 import { EXAMPLES } from '../content/examples';
 import { EXERCISES, type Exercise } from '../content/exercises';
-import { exportExercise, importExercises } from './dialogs2';
+import { exportExercise, importExercises, nameControls } from './dialogs2';
 import { LESSONS } from '../content/lessons';
 import { GCODES, MCODES, ADDRESSES, MACROS, type CodeRef } from '../content/gcodeRef';
 import type { MachineSettings, MaterialId, OffsetEntry, P, StockDef, ToolDef, ToolType } from '../types';
@@ -71,7 +71,7 @@ export function exercisesDialog(app: AppApi) {
       h('p', null, ex.brief.replace(/<[^>]+>/g, ' ').replace(/&[a-z#0-9]+;/g, ' ').slice(0, 170) + '…'),
       ex.custom
         ? h('div', { class: 'row', style: { display: 'flex', gap: '6px' } },
-            h('button', { onclick: (e: Event) => { e.stopPropagation(); download(`${ex.title.replace(/[^w-]+/g, '_')}.lathelab.json`, exportExercise(ex), 'application/json'); } }, 'Download'),
+            h('button', { onclick: (e: Event) => { e.stopPropagation(); download(`${ex.title.replace(/[^\w-]+/g, '_')}.lathelab.json`, exportExercise(ex), 'application/json'); } }, 'Download'),
             h('button', { onclick: (e: Event) => { e.stopPropagation(); navigator.clipboard?.writeText(exportExercise(ex)).then(() => toast('Copied', 'ok'), () => toast('Copy blocked', 'warn')); } }, 'Copy JSON'),
             h('button', { onclick: (e: Event) => { e.stopPropagation(); app.customExercises.splice(app.customExercises.indexOf(ex), 1); app.saveCustomExercises(); renderCustom(); } }, 'Delete'))
         : null,
@@ -80,8 +80,8 @@ export function exercisesDialog(app: AppApi) {
     fill(customHost, app.customExercises.length ? app.customExercises.map(card) : [h('p', { class: 'muted' }, 'No custom exercises yet.')]);
   };
   renderCustom();
-  const paste = h('textarea', { rows: 3, placeholder: 'Paste exercise JSON here…', spellcheck: 'false' });
-  const fileIn = h('input', { type: 'file', accept: '.json,application/json', hidden: true });
+  const paste = h('textarea', { rows: 3, placeholder: 'Paste exercise JSON here…', spellcheck: 'false', 'aria-label': 'Exercise JSON to import' });
+  const fileIn = h('input', { type: 'file', accept: '.json,application/json', hidden: true, 'aria-label': 'Exercise file to import' });
   const doImport = (text: string) => {
     try {
       const list = importExercises(text);
@@ -163,11 +163,14 @@ export function lessonsDialog(app: AppApi, startId?: string) {
     const checkDone = () => {
       const all = content.querySelectorAll('.quiz .opts-q');
       const ok = Array.from(all).every((o) => o.querySelector('.right'));
-      if (ok) {
+      if (!ok) return;
+      if (!app.progress.has('lesson:' + L.id)) {
         app.progress.add('lesson:' + L.id);
         app.saveProgress();
-        list.querySelectorAll('button')[idx].append(h('span', { class: 'done' }, '✔'));
       }
+      // the mark is added once – further clicks on answers must not stack more ticks
+      const btn = list.querySelectorAll('button')[idx];
+      if (btn && !btn.querySelector('.done')) btn.append(h('span', { class: 'done' }, '✔'));
     };
     fill(content,
       h('h3', null, L.title),
@@ -203,7 +206,7 @@ export function lessonsDialog(app: AppApi, startId?: string) {
 // ------------------------------------------------------------------ reference
 
 export function referenceDialog(filter = '') {
-  const input = h('input', { type: 'text', class: 'ref-search', placeholder: 'Search: e.g. G71, thread, compensation…', value: filter });
+  const input = h('input', { type: 'text', class: 'ref-search', placeholder: 'Search: e.g. G71, thread, compensation…', value: filter, 'aria-label': 'Search the G-code reference' });
   const out = h('div');
   const item = (c: CodeRef) =>
     h(
@@ -285,42 +288,62 @@ export function toolsDialog(app: AppApi) {
   const tableHost = h('div', { class: 'tool-table' });
   const types = Object.keys(TOOL_TYPE_LABEL) as ToolType[];
 
+  /** preview + description of the selected tool */
+  const showSel = () => {
+    const t = tools.find((x) => x.id === sel);
+    if (t) {
+      requestAnimationFrame(() => drawToolPreview(preview, t));
+      info.textContent = `${TOOL_TYPE_LABEL[t.type]} – tip number ${t.tipNo}. Width = groove/part-off width, drill Ø or boring bar Ø. Reach = max. groove depth / drill flute length / bar length. Drills use the last angle as point angle.`;
+    }
+  };
+  /** selecting a row must NOT rebuild the table – that would swallow the click / focus on its fields */
+  const select = (id: number) => {
+    if (sel === id) return;
+    sel = id;
+    tableHost.querySelectorAll<HTMLElement>('tr[data-id]').forEach((tr) => tr.classList.toggle('sel', +tr.dataset.id! === id));
+    showSel();
+  };
+
   const render = () => {
+    // keep the keyboard focus on the same field when the table has to be rebuilt (type change, add, remove)
+    const focusName = tableHost.contains(document.activeElement) ? document.activeElement?.getAttribute('aria-label') : null;
     const rows = [];
     for (let id = 1; id <= 12; id++) {
       const t = tools.find((x) => x.id === id);
       const o = offsets.get(id) ?? { wx: 0, wz: 0, r: 0, t: 0 };
       offsets.set(id, o);
+      const T = `T${String(id).padStart(2, '0')}`;
       const upd = () => {
         if (id === sel && t) drawToolPreview(preview, t);
       };
       if (!t) {
-        rows.push(h('tr', null, h('td', null, `T${String(id).padStart(2, '0')}`), h('td', { colspan: 14 },
+        rows.push(h('tr', null, h('td', null, T), h('td', { colspan: 14 },
           h('span', { class: 'muted' }, 'empty station '),
-          h('button', { onclick: () => { tools.push({ ...defaultTools()[0], id, name: 'New tool' }); sel = id; render(); } }, '+ add tool'))));
+          h('button', { 'aria-label': `Add a tool in station ${T}`, onclick: () => { tools.push({ ...defaultTools()[0], id, name: 'New tool' }); sel = id; render(); } }, '+ add tool'))));
         continue;
       }
-      const field = (k: keyof ToolDef, attrs: Record<string, unknown> = {}) => num(t[k] as number, (v) => { (t as unknown as Record<string, number>)[k] = v; if (k === 'noseR') { o.r = v; rIn.value = String(v); } upd(); }, attrs);
-      const rIn = num(o.r, (v) => (o.r = v), { min: 0, step: 0.1 }) as HTMLInputElement;
+      const field = (k: keyof ToolDef, name: string, attrs: Record<string, unknown> = {}) =>
+        num(t[k] as number, (v) => { (t as unknown as Record<string, number>)[k] = v; if (k === 'noseR') { o.r = v; rIn.value = String(v); } upd(); }, { ...attrs, 'aria-label': `${T} ${name}` });
+      const rIn = num(o.r, (v) => (o.r = v), { min: 0, step: 0.1, 'aria-label': `${T} offset R (nose radius for G41/G42)` }) as HTMLInputElement;
       rows.push(
-        h('tr', { class: id === sel ? 'sel' : '', onclick: () => { if (sel !== id) { sel = id; render(); } } },
-          h('td', null, h('b', null, `T${String(id).padStart(2, '0')}`)),
-          h('td', null, h('select', { onchange: (e: Event) => { t.type = (e.target as HTMLSelectElement).value as ToolType; const d = defaultTools().find((x) => x.type === t.type); if (d) Object.assign(t, { ...d, id, name: d.name }); o.r = t.noseR; o.t = t.tipNo; render(); } },
+        h('tr', { class: id === sel ? 'sel' : '', dataset: { id: String(id) }, onclick: () => select(id) },
+          h('td', null, h('b', null, T)),
+          h('td', null, h('select', { 'aria-label': `${T} tool type`, onchange: (e: Event) => { t.type = (e.target as HTMLSelectElement).value as ToolType; const d = defaultTools().find((x) => x.type === t.type); if (d) Object.assign(t, { ...d, id, name: d.name }); o.r = t.noseR; o.t = t.tipNo; render(); } },
             types.map((ty) => h('option', { value: ty, selected: ty === t.type }, TOOL_TYPE_LABEL[ty])))),
-          h('td', null, h('input', { type: 'text', value: t.name, oninput: (e: Event) => (t.name = (e.target as HTMLInputElement).value) })),
-          h('td', null, field('noseR', { min: 0, step: 0.1 })),
-          h('td', null, field('tipNo', { min: 0, max: 9, step: 1 })),
-          h('td', null, field('insertAngle', { min: 20, max: 90 })),
-          h('td', null, field('approach', { min: 45, max: 120 })),
-          h('td', null, field('size', { min: 3, max: 30 })),
-          h('td', null, field('width', { min: 0.5, max: 60 })),
-          h('td', null, field('reach', { min: 1, max: 200 })),
-          h('td', null, field('threadAngle', { min: 29, max: 140 })),
-          h('td', null, num(o.wx, (v) => (o.wx = v), { step: 0.01 })),
-          h('td', null, num(o.wz, (v) => (o.wz = v), { step: 0.01 })),
+          h('td', null, h('input', { type: 'text', value: t.name, 'aria-label': `${T} name`, oninput: (e: Event) => (t.name = (e.target as HTMLInputElement).value) })),
+          h('td', null, field('noseR', 'nose radius', { min: 0, step: 0.1 })),
+          h('td', null, field('tipNo', 'tip number', { min: 0, max: 9, step: 1 })),
+          h('td', null, field('insertAngle', 'insert angle', { min: 20, max: 90 })),
+          h('td', null, field('approach', 'approach angle', { min: 45, max: 120 })),
+          h('td', null, field('size', 'edge length', { min: 3, max: 30 })),
+          h('td', null, field('width', 'width / diameter', { min: 0.5, max: 60 })),
+          h('td', null, field('reach', 'reach', { min: 1, max: 200 })),
+          h('td', null, field('threadAngle', 'thread / point angle', { min: 29, max: 140 })),
+          h('td', null, num(o.wx, (v) => (o.wx = v), { step: 0.01, 'aria-label': `${T} wear X (diameter)` })),
+          h('td', null, num(o.wz, (v) => (o.wz = v), { step: 0.01, 'aria-label': `${T} wear Z` })),
           h('td', null, rIn),
-          h('td', null, num(o.t, (v) => (o.t = Math.round(v)), { min: 0, max: 9, step: 1 })),
-          h('td', null, h('button', { title: 'Remove tool', onclick: (e: Event) => { e.stopPropagation(); tools = tools.filter((x) => x.id !== id); render(); } }, '✕')),
+          h('td', null, num(o.t, (v) => (o.t = Math.round(v)), { min: 0, max: 9, step: 1, 'aria-label': `${T} offset T (tip number for G41/G42)` })),
+          h('td', null, h('button', { title: 'Remove tool', 'aria-label': `Remove tool ${T}`, onclick: (e: Event) => { e.stopPropagation(); tools = tools.filter((x) => x.id !== id); render(); } }, '✕')),
         ),
       );
     }
@@ -330,11 +353,8 @@ export function toolsDialog(app: AppApi) {
         rows,
       ),
     );
-    const t = tools.find((x) => x.id === sel);
-    if (t) {
-      requestAnimationFrame(() => drawToolPreview(preview, t));
-      info.textContent = `${TOOL_TYPE_LABEL[t.type]} – tip number ${t.tipNo}. Width = groove/part-off width, drill Ø or boring bar Ø. Reach = max. groove depth / drill flute length / bar length. Drills use the last angle as point angle.`;
-    }
+    if (focusName) Array.from(tableHost.querySelectorAll<HTMLElement>('[aria-label]')).find((e) => e.getAttribute('aria-label') === focusName)?.focus();
+    showSel();
   };
   render();
   const body = h(
@@ -371,6 +391,7 @@ export function stockDialog(app: AppApi) {
     h('label', null, 'Face allowance beyond Z0'), num(d.faceAllowance, (v) => (d.faceAllowance = v), { min: 0, max: 20 }),
     h('label', null, 'Length held in the jaws'), num(d.gripLength, (v) => (d.gripLength = v), { min: 5, max: 200 }),
   );
+  nameControls(form);
   const body = h('div', null, form, h('p', { class: 'muted' }, 'The bar sticks out of the chuck by (length − grip). Z0 is the finished front face; the raw bar ends at +face allowance.'));
   openDialog({
     title: 'Workpiece (bar stock)',
@@ -423,9 +444,10 @@ export function settingsDialog(app: AppApi) {
   const wo = h('table', { class: 'data' },
     h('tr', null, h('th', null, 'Work offset'), h('th', null, 'Shift X (Ø)'), h('th', null, 'Shift Z')),
     [54, 55, 56, 57, 58, 59].map((g) => h('tr', null, h('td', null, `G${g}`),
-      h('td', null, num((w[g]?.x ?? 0) * 2, (v) => (w[g] = { ...(w[g] ?? { x: 0, z: 0 }), x: v / 2 }))),
-      h('td', null, num(w[g]?.z ?? 0, (v) => (w[g] = { ...(w[g] ?? { x: 0, z: 0 }), z: v }))))),
+      h('td', null, num((w[g]?.x ?? 0) * 2, (v) => (w[g] = { ...(w[g] ?? { x: 0, z: 0 }), x: v / 2 }), { 'aria-label': `G${g} shift X (diameter)` })),
+      h('td', null, num(w[g]?.z ?? 0, (v) => (w[g] = { ...(w[g] ?? { x: 0, z: 0 }), z: v }), { 'aria-label': `G${g} shift Z` })))),
   );
+  nameControls(form);
   openDialog({
     title: 'Machine settings',
     body: h('div', null, form, h('h4', null, 'Work coordinate systems'), h('p', { class: 'muted small' }, 'Shift of each work zero relative to the simulator zero (normally only Z is used, e.g. for a second part).'), wo),
@@ -443,6 +465,7 @@ export function calcDialog(material: MaterialId) {
     const upd = () => (out.innerHTML = calc(vals));
     const form = h('div', { class: 'form' },
       fields.flatMap(([label, , unit], i) => [h('label', null, `${label}${unit ? ` (${unit})` : ''}`), num(vals[i], (v) => { vals[i] = v; upd(); })]));
+    nameControls(form);
     upd();
     return h('div', { class: 'calc-card' }, h('h4', null, title), form, out);
   };

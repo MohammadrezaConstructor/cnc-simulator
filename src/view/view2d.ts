@@ -26,6 +26,22 @@ interface PathItem {
 
 const css = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '#888';
 
+/** ctx.font does not resolve CSS variables ('12px var(--mono)' is ignored) – read the font stacks
+ *  from the page once and build plain font strings */
+const FONT_FALLBACK = { mono: 'monospace', sans: 'sans-serif' };
+let fontStacks: { mono: string; sans: string } | null = null;
+function canvasFont(px: number, kind: 'mono' | 'sans'): string {
+  if (!fontStacks) {
+    const cs = getComputedStyle(document.documentElement);
+    const mono = cs.getPropertyValue('--mono').trim();
+    const sans = cs.getPropertyValue('--sans').trim();
+    // stylesheet not applied yet → use the generic family now and try again next time
+    if (!mono || !sans) return `${px}px ${FONT_FALLBACK[kind]}`;
+    fontStacks = { mono, sans };
+  }
+  return `${px}px ${fontStacks[kind]}`;
+}
+
 export class View2D {
   canvas: HTMLCanvasElement;
   ctx: CanvasRenderingContext2D;
@@ -284,7 +300,7 @@ export class View2D {
     }
     // labels
     ctx.fillStyle = C['--v-text'];
-    ctx.font = '10px var(--mono, monospace)';
+    ctx.font = canvasFont(10, 'mono');
     ctx.textBaseline = 'top';
     const dec = major < 1 ? 2 : 0;
     for (let z = Math.ceil(z0 / major) * major; z <= z1; z += major) {
@@ -399,7 +415,7 @@ export class View2D {
       ctx.globalAlpha = 1;
       const zr = Math.max(...dropped.flatMap((b) => b.outline.map((p) => p.z))) + 6;
       ctx.fillStyle = C['--v-text'];
-      ctx.font = '11px var(--sans, sans-serif)';
+      ctx.font = canvasFont(11, 'sans');
       ctx.fillText('✂ parted off', this.sx(zr) + 6, this.sy(this.machine.stock.radius));
     }
   }
@@ -443,7 +459,7 @@ export class View2D {
     }
     // legend (text in text colour, swatch carries the class)
     const labels = ['Ra ≤ 0.8', '≤ 1.6', '≤ 3.2', '> 3.2 µm'];
-    ctx.font = '11px var(--sans, sans-serif)';
+    ctx.font = canvasFont(11, 'sans');
     ctx.textBaseline = 'middle';
     let x = 12;
     const y = 40;
@@ -562,7 +578,7 @@ export class View2D {
     ctx.arc(X, Y, 7, Math.PI / 2, Math.PI);
     ctx.closePath();
     ctx.fill();
-    ctx.font = '10px var(--sans, sans-serif)';
+    ctx.font = canvasFont(10, 'sans');
     ctx.fillText('W (X0 Z0)', X + 10, Y + 14);
   }
 
@@ -635,7 +651,7 @@ export class View2D {
       const L = Math.hypot(b.z - a.z, b.x - a.x);
       const txt = `ΔZ ${dZ.toFixed(3)}  ΔØ ${dD.toFixed(3)}  L ${L.toFixed(3)}  ∠ ${((Math.atan2(Math.abs(b.x - a.x), Math.abs(dZ)) * 180) / Math.PI).toFixed(2)}°`;
       const X = (this.sx(a.z) + this.sx(b.z)) / 2, Y = (this.sy(a.x) + this.sy(b.x)) / 2;
-      ctx.font = '12px var(--mono, monospace)';
+      ctx.font = canvasFont(12, 'mono');
       const w = ctx.measureText(txt).width;
       ctx.fillStyle = C['--v-bg'];
       ctx.fillRect(X - w / 2 - 4, Y - 22, w + 8, 18);
@@ -662,12 +678,12 @@ export class View2D {
     ctx.moveTo(x0 + L, y0 - 4);
     ctx.lineTo(x0 + L, y0 + 4);
     ctx.stroke();
-    ctx.font = '10px var(--mono, monospace)';
+    ctx.font = canvasFont(10, 'mono');
     ctx.textBaseline = 'top';
     ctx.fillText(`${step} mm`, x0, y0 + 6);
     if (this.hover) {
       const t = `Ø${(Math.abs(this.hover.x) * 2).toFixed(3)}  Z${this.hover.z.toFixed(3)}`;
-      ctx.font = '12px var(--mono, monospace)';
+      ctx.font = canvasFont(12, 'mono');
       const w = ctx.measureText(t).width;
       ctx.fillStyle = C['--v-bg'];
       ctx.globalAlpha = 0.85;

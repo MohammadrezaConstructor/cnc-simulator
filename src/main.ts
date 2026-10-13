@@ -13,7 +13,7 @@ import { EXERCISES, type Exercise } from './content/exercises';
 import { createEditor, type Editor } from './ui/editor';
 import { View2D } from './view/view2d';
 import { View3D } from './view/view3d';
-import { h, $, $$, toast, fmtTime, download, store, dialogOpen, fill, confirmDialog, isLightTheme } from './ui/dom';
+import { h, $, $$, toast, fmtTime, download, store, dialogOpen, fill, confirmDialog, isLightTheme, keyBelongsToControl } from './ui/dom';
 import { partDrawing } from './ui/drawing';
 import * as D from './ui/dialogs';
 import { wizardDialog, builderDialog, textToHtml } from './ui/dialogs2';
@@ -70,6 +70,10 @@ class App implements D.AppApi {
   private lastDro = 0;
   private cursorLine = 0;
   private hadDropped = false;
+  /** G50 X_/Z_ shifts of the loaded program (see findG50Shifts) */
+  private g50Marks: { line: number; g50: P }[] = [];
+  private lastChartTable = 0;
+  private chartTableSrc: { samples: unknown[]; n: number } | null = null;
   private jogDir: { x: number; z: number } | null = null;
   private jogRapid = false;
   private jogInc = 1;
@@ -90,7 +94,7 @@ class App implements D.AppApi {
     this.stock = new Stock(this.stockDef);
     this.machine = new Machine(this.stock, this.tools, this.settings);
 
-    this.editor = createEditor($('#editor'), saved?.code ?? first.code, () => this.onCodeChange(), (l) => this.onCursor(l));
+    this.editor = createEditor($('#editor'), saved?.code ?? first.code, () => this.onCodeChange(), (l) => this.onCursor(l), undefined, { onRun: () => this.cycleStart() });
     this.v2 = new View2D($('#view2d'), this.machine);
     this.v3 = new View3D($('#view3d'), this.machine);
     this.charts = new Charts($('#chartHost'));
@@ -319,13 +323,22 @@ class App implements D.AppApi {
         h('button', { onclick: () => this.check() }, '✓ Check part'),
         h('button', {
           onclick: () => {
+            if (!this.confirmDiscard()) return;
             confirmDialog('Replace your program with the reference solution?', 'Show solution', () => {
               this.editor.setDoc(ex.solution);
               this.newStock(false);
             });
           },
         }, 'Show solution'),
-        h('button', { onclick: () => { this.editor.setDoc(ex.starter); } }, 'Restart'),
+        h('button', {
+          onclick: () => {
+            if (!this.confirmDiscard()) return;
+            confirmDialog('Discard your program and start the exercise again from the starter code?', 'Restart', () => {
+              this.editor.setDoc(ex.starter);
+              this.newStock(false);
+            });
+          },
+        }, 'Restart'),
         h('button', { onclick: () => this.hideExercise() }, 'Close'),
       ),
     );
@@ -395,7 +408,8 @@ class App implements D.AppApi {
   }
 
   private loadIntoMachine(): boolean {
-    this.result = interpret(this.editor.getDoc(), this.cfg(), this.initState());
+    const code = this.editor.getDoc();
+    this.result = interpret(code, this.cfg(), this.initState());
     const r = this.result;
     this.editor.setDiagnostics(r.diags);
     const errs = r.diags.filter((d) => d.severity === 'error');
@@ -411,10 +425,44 @@ class App implements D.AppApi {
     this.v3.setOps(r.ops);
     this.v3.threads = r.threads;
     this.estimate = estimateTime(r.ops, this.settings);
+    this.g50Marks = this.findG50Shifts(code, r);
     this.machine.time = 0;
     this.machine.cutTime = 0;
     this.needsReload = false;
     return true;
+  }
+
+  /** G50 X_/Z_ (old style) shifts the coordinate system at run time. The modal snapshots do not carry
+   *  that shift, so re-run the program up to each such block (old-style programs have one per tool at
+   *  most) and read the shift back – used by the DRO. Lines are in source order. */
+  private findG50Shifts(code: string, r: InterpResult): { line: number; g50: P }[] {
+    const marks: { line: number; g50: P }[] = [];
+    const lines = code.split('\n');
+    for (const b of r.blocks) {
+      if (!b || !b.words.some((w) => w.letter === 'G' && w.value === 50) || !b.words.some((w) => 'XZUW'.includes(w.letter))) continue;
+      const head = interpret(lines.slice(0, b.line + 1).join('\n'), this.cfg(), this.initState());
+      marks.push({ line: b.line, g50: { ...head.state.g50 } });
+    }
+    return marks;
+  }
+
+  /** shift of the coordinate system the DRO shows: work offset (G54…G59) + G50 of the block being
+   *  executed; when idle, the system the next run starts in (G54 for AUTO, the MDI modal state otherwise) */
+  private droShift(): P {
+    const m = this.machine;
+    let work = 54;
+    let g50: P = { x: 0, z: 0 };
+    const programActive = this.opsSource === 'program' && (this.running === 'program' || (m.status === 'done' && this.mode === 'AUTO'));
+    if (programActive && m.ops.length) {
+      const line = m.ops[Math.min(m.i, m.ops.length - 1)].line;
+      work = this.result?.modal.get(line)?.work ?? 54;
+      for (const g of this.g50Marks) if (g.line <= line) g50 = g.g50;
+    } else if (this.mode !== 'AUTO' && this.mdiState) {
+      work = this.mdiState.work;
+      g50 = this.mdiState.g50;
+    }
+    const w = this.workOffsets[work] ?? this.workOffsets[54] ?? { x: 0, z: 0 };
+    return { x: w.x + g50.x, z: w.z + g50.z };
   }
 
   cycleStart() {
@@ -475,7 +523,20 @@ class App implements D.AppApi {
     this.needsReload = true;
     this.machine.status = 'running';
     this.mdiHistory = [txt, ...this.mdiHistory.filter((x) => x !== txt)].slice(0, 12);
-    $('#mdiHist').replaceChildren(...this.mdiHistory.map((t) => h('div', { title: 'Click to reuse', onclick: () => (($('#mdiText') as HTMLTextAreaElement).value = t) }, t.replace(/\n/g, ' ⏎ '))));
+    // real buttons (keyboard + screen reader); styled like the plain text rows they replace, the
+    // wrapping div keeps the .mdi-hist hover colour
+    const histBtnStyle = { display: 'block', width: '100%', textAlign: 'left', background: 'none', border: '0', borderRadius: '0', padding: '0', margin: '0', color: 'inherit', font: 'inherit', cursor: 'pointer' };
+    $('#mdiHist').replaceChildren(...this.mdiHistory.map((t) => h('div', null, h('button', {
+      type: 'button',
+      title: 'Click to reuse',
+      'aria-label': 'Reuse MDI: ' + t.replace(/\n/g, ' ; '),
+      style: histBtnStyle,
+      onclick: () => {
+        const ta = $('#mdiText') as HTMLTextAreaElement;
+        ta.value = t;
+        ta.focus();
+      },
+    }, t.replace(/\n/g, ' ⏎ ')))));
     for (const d of r.diags) if (d.severity === 'warning') this.msg({ type: 'warning', message: 'MDI: ' + d.message, line: -1 });
   }
 
@@ -653,6 +714,11 @@ class App implements D.AppApi {
       this.charts.total = this.estimate.total;
       this.charts.powerLimit = this.settings.powerKW;
       this.charts.draw();
+      // the table view (if shown) follows the run too, at a calmer rate
+      if (now - this.lastChartTable > 500) {
+        this.lastChartTable = now;
+        this.renderChartTable(false);
+      }
     }
 
     // execution line
@@ -678,7 +744,7 @@ class App implements D.AppApi {
     const m = this.machine;
     const L = m.live;
     const off = m.offset ? this.offsets.get(m.offset) : undefined;
-    const w = this.workOffsets[54] ?? { x: 0, z: 0 };
+    const w = this.droShift();
     const absX = (m.pos.x - w.x - (off ? off.wx / 2 : 0)) * 2;
     const absZ = m.pos.z - w.z - (off ? off.wz : 0);
     $('#droX').textContent = absX.toFixed(3);
@@ -872,10 +938,15 @@ class App implements D.AppApi {
     }
   }
 
-  private renderChartTable() {
+  /** @param force false = skip when the samples did not change since the last render */
+  private renderChartTable(force = true) {
     const host = $('#chartTable');
     if (host.classList.contains('hidden')) return;
-    const rows = summarizeByLine(this.machine.samples);
+    const samples = this.machine.samples;
+    const src = this.chartTableSrc;
+    if (!force && src && src.samples === samples && src.n === samples.length) return;
+    this.chartTableSrc = { samples, n: samples.length };
+    const rows = summarizeByLine(samples);
     fill(host, rows.length
       ? h('table', { class: 'data' },
           h('tr', null, ['Line', 'Tool', 'From', 'To', 'Max rpm', 'Max feed mm/min', 'Max kW'].map((c, i) => h('th', { class: i >= 2 ? 'num' : '' }, c))),
@@ -1167,8 +1238,10 @@ class App implements D.AppApi {
       const d = b.dataset.jog!;
       if (d === 'rapid') {
         b.addEventListener('click', () => {
-          this.jogRapid = !this.jogRapid;
-          b.classList.toggle('on', this.jogRapid);
+          const on = !b.classList.contains('on');
+          b.classList.toggle('on', on);
+          b.setAttribute('aria-pressed', String(on));
+          this.jogRapid = on;
         });
         return;
       }
@@ -1212,8 +1285,12 @@ class App implements D.AppApi {
       const t = e.target as HTMLElement;
       return t.closest('.cm-editor') || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName);
     };
+    // the JOG RAPID toggle button is the persistent state; Shift only overrides it while an arrow key is held
+    const rapidToggle = () => $('#jogRapid').classList.contains('on');
     document.addEventListener('keydown', (e) => {
-      if (dialogOpen()) return;
+      // a key already handled elsewhere (Ctrl+Enter in the editor, Esc closing the search panel /
+      // autocomplete, …) must not trigger a machine action a second time
+      if (dialogOpen() || e.defaultPrevented) return;
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
         e.preventDefault();
         this.cycleStart();
@@ -1221,13 +1298,13 @@ class App implements D.AppApi {
         e.preventDefault();
         this.saveFile();
       } else if (e.key === 'Escape') this.reset();
-      else if (e.key === ' ' && !inField(e)) {
+      else if (e.key === ' ' && !keyBelongsToControl(e)) {
         e.preventDefault();
         this.feedHold();
       } else if (this.mode === 'JOG' && !inField(e) && e.key.startsWith('Arrow')) {
         e.preventDefault();
         const dir = { ArrowUp: { x: 1, z: 0 }, ArrowDown: { x: -1, z: 0 }, ArrowLeft: { x: 0, z: -1 }, ArrowRight: { x: 0, z: 1 } }[e.key]!;
-        this.jogRapid = e.shiftKey;
+        this.jogRapid = e.shiftKey || rapidToggle();
         if (this.jogInc === 0) this.jogDir = dir;
         else if (!e.repeat) this.jogIncrement(dir);
       }
@@ -1235,7 +1312,7 @@ class App implements D.AppApi {
     document.addEventListener('keyup', (e) => {
       if (e.key.startsWith('Arrow')) {
         this.jogDir = null;
-        if (this.jogRapid && !($('#jogRapid').classList.contains('on'))) this.jogRapid = false;
+        this.jogRapid = rapidToggle();
       }
     });
     window.addEventListener('beforeunload', () => this.saveSession());

@@ -1,7 +1,7 @@
 {
-  "name": "lathe-sim",
+  "name": "cnc-simulator",
   "version": "1.0.0",
-  "description": "Educational CNC lathe simulator (Fanuc-style G-code, 2D/3D material removal)",
+  "description": "Educational CNC lathe (LatheLab) and milling (MillLab) simulators: Fanuc-style G-code, 2D/3D material removal, lessons and graded exercises",
   "private": true,
   "type": "module",
   "scripts": {
@@ -28,7 +28,6 @@
     "@types/three": "^0.186.0",
     "typescript": "^7.0.2",
     "vite": "^8.3.4",
-    "vite-plugin-singlefile": "^2.3.3",
     "vitest": "^5.0.3"
   }
 }

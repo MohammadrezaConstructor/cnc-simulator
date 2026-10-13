@@ -15,7 +15,7 @@ import { simulateBlock, checkBlock } from './inspect';
 import { MillView2D, type View2DMode } from './view2d';
 import { MillView3D } from './view3d';
 import { createEditor, type Editor } from '../ui/editor';
-import { h, $, $$, toast, fmtTime, download, store, dialogOpen, fill, confirmDialog, isLightTheme } from '../ui/dom';
+import { h, $, $$, toast, fmtTime, download, store, dialogOpen, fill, confirmDialog, isLightTheme, keyBelongsToControl } from '../ui/dom';
 import { Charts, summarizeByLine } from '../view/charts';
 import { MachineSound } from '../ui/sound';
 import * as D from './dialogs';
@@ -86,7 +86,7 @@ class MillApp implements D.MillAppApi {
     this.stockDef = saved?.stock ?? { ...first.stock };
     this.block = new BlockModel(this.stockDef);
     this.machine = new MillMachine(this.block, this.tools, this.settings);
-    this.editor = createEditor($('#editor'), saved?.code ?? first.code, () => this.onCodeChange(), (l) => this.onCursor(l), { find: findMillCode, gcodes: MILL_G, mcodes: MILL_M, axes: 'XYZ' });
+    this.editor = createEditor($('#editor'), saved?.code ?? first.code, () => this.onCodeChange(), (l) => this.onCursor(l), { find: findMillCode, gcodes: MILL_G, mcodes: MILL_M, axes: 'XYZ' }, { onRun: () => this.cycleStart() });
     this.v2 = new MillView2D($('#view2d'), this.machine);
     this.v3 = new MillView3D($('#view3d'), this.machine);
     this.charts = new Charts($('#chartHost'));
@@ -244,7 +244,7 @@ class MillApp implements D.MillAppApi {
         h('button', { onclick: () => this.showTargetPreview() }, 'Show target'),
         h('button', { onclick: () => this.check() }, '✓ Check part'),
         h('button', { onclick: () => confirmDialog('Replace your program with the reference solution?', 'Show solution', () => { this.editor.setDoc(ex.solution); this.newStock(false); }) }, 'Show solution'),
-        h('button', { onclick: () => this.editor.setDoc(ex.starter) }, 'Restart'),
+        h('button', { onclick: () => { if (this.confirmIdle()) confirmDialog('Discard your program and start the exercise again from the starter code?', 'Restart', () => { this.editor.setDoc(ex.starter); this.newStock(false); }); } }, 'Restart'),
         h('button', { onclick: () => this.hideExercise() }, 'Close')));
     card.classList.remove('hidden');
     $('#btnCheck').removeAttribute('disabled');
@@ -319,7 +319,12 @@ class MillApp implements D.MillAppApi {
     this.reinterpret();
     this.updateJogTools();
   }
-  applyStock(def: BlockStock, message?: string) {
+  applyStock(def: BlockStock, message?: string): boolean {
+    if (!this.confirmIdle()) return false;
+    if (this.exercise) {
+      toast('The exercise defines the block and its work zero – close the exercise to change them', 'warn');
+      return false;
+    }
     this.stockDef = { ...def };
     this.updateConv();
     this.block.reset(this.stockDef);
@@ -331,6 +336,8 @@ class MillApp implements D.MillAppApi {
       this.v3.view('iso');
     });
     toast(message ?? `New block ${def.sizeX} × ${def.sizeY} × ${def.sizeZ} loaded`, 'ok');
+    this.reinterpret();
+    return true;
   }
   /** quick button: automatic tool length + radius compensation on/off */
   toggleAutoComp() {
@@ -347,9 +354,7 @@ class MillApp implements D.MillAppApi {
       return false;
     }
     if (origin === this.stockDef.origin && zRef === (this.stockDef.zRef ?? 'finished')) return true;
-    this.applyStock({ ...this.stockDef, origin, zRef }, `G54 = ${ORIGIN_NAMES[origin]}, Z0 on the ${zRef === 'raw' ? 'raw' : 'finished'} top – fresh block loaded`);
-    this.reinterpret();
-    return true;
+    return this.applyStock({ ...this.stockDef, origin, zRef }, `G54 = ${ORIGIN_NAMES[origin]}, Z0 on the ${zRef === 'raw' ? 'raw' : 'finished'} top – fresh block loaded`);
   }
   /** one-line summary of the work zero and the programming conventions under the DRO */
   private updateConv() {
@@ -626,6 +631,16 @@ class MillApp implements D.MillAppApi {
   // ------------------------------------------------------------------ frame
 
   private frame(now: number) {
+    try {
+      this.frameBody(now);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      requestAnimationFrame((t) => this.frame(t));
+    }
+  }
+
+  private frameBody(now: number) {
     const dt = Math.min(0.1, (now - (this.t0 || now)) / 1000);
     this.t0 = now;
     const m = this.machine;
@@ -661,7 +676,6 @@ class MillApp implements D.MillAppApi {
       this.lastDro = now;
       this.updateDro();
     }
-    requestAnimationFrame((t) => this.frame(t));
   }
 
   private updateDro() {
@@ -728,7 +742,7 @@ class MillApp implements D.MillAppApi {
         break;
       }
     }
-    const ex = explainMillBlock(r.blocks[line], before);
+    const ex = explainMillBlock(r.blocks[line], before, this.settings);
     const trace = r.varTrace.get(line);
     const t = this.estimate.perLine.get(line);
     fill(body,
@@ -815,15 +829,13 @@ class MillApp implements D.MillAppApi {
     const sl = $('#secPos') as HTMLInputElement;
     const b = this.block;
     const side = this.v2.mode === 'side';
+    // both section lines must lie on the block (it moves when the work zero changes)
+    if (!(this.v2.secX >= b.x0 && this.v2.secX <= b.x1)) this.v2.secX = (b.x0 + b.x1) / 2;
+    if (!(this.v2.secY >= b.y0 && this.v2.secY <= b.y1)) this.v2.secY = (b.y0 + b.y1) / 2;
     sl.min = String(side ? b.x0 : b.y0);
     sl.max = String(side ? b.x1 : b.y1);
     sl.value = String(side ? this.v2.secX : this.v2.secY);
-    if (+sl.value < +sl.min || +sl.value > +sl.max) {
-      const mid = side ? (b.x0 + b.x1) / 2 : (b.y0 + b.y1) / 2;
-      if (side) this.v2.secX = mid;
-      else this.v2.secY = mid;
-      sl.value = String(mid);
-    }
+    this.v2.invalidate();
     $('#secPosV').textContent = `${side ? 'X' : 'Y'}${(+sl.value).toFixed(1)}`;
     $('.sec-ctl').classList.toggle('hidden', this.v2.mode === 'top');
   }
@@ -1054,7 +1066,7 @@ class MillApp implements D.MillAppApi {
       return t.closest('.cm-editor') || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName);
     };
     document.addEventListener('keydown', (e) => {
-      if (dialogOpen()) return;
+      if (dialogOpen() || e.defaultPrevented) return;
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
         e.preventDefault();
         this.cycleStart();
@@ -1062,7 +1074,7 @@ class MillApp implements D.MillAppApi {
         e.preventDefault();
         this.saveFile();
       } else if (e.key === 'Escape') this.reset();
-      else if (e.key === ' ' && !inField(e)) {
+      else if (e.key === ' ' && !keyBelongsToControl(e)) {
         e.preventDefault();
         this.feedHold();
       } else if (this.mode === 'JOG' && !inField(e)) {
@@ -1070,7 +1082,7 @@ class MillApp implements D.MillAppApi {
         const d = map[e.key];
         if (!d) return;
         e.preventDefault();
-        this.jogRapid = e.shiftKey;
+        this.jogRapid = e.shiftKey || $('#jogRapid').classList.contains('on');
         if (this.jogInc === 0) this.jogDir = d;
         else if (!e.repeat) this.jogIncrement(d);
       }
@@ -1078,7 +1090,7 @@ class MillApp implements D.MillAppApi {
     document.addEventListener('keyup', (e) => {
       if (e.key.startsWith('Arrow') || e.key.startsWith('Page')) {
         this.jogDir = null;
-        if (!$('#jogRapid').classList.contains('on')) this.jogRapid = false;
+        this.jogRapid = $('#jogRapid').classList.contains('on');
       }
     });
     window.addEventListener('beforeunload', () => this.saveSession());

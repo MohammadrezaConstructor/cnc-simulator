@@ -149,6 +149,22 @@ function extrude(poly: P[], depth: number): THREE.BufferGeometry {
   return g;
 }
 
+/** free the GPU resources of everything below `root` (geometries, materials and their textures);
+ *  materials in `keep` are shared and stay alive */
+function disposeTree(root: THREE.Object3D, keep?: THREE.Material) {
+  const mats = new Set<THREE.Material>();
+  root.traverse((o) => {
+    const obj = o as THREE.Mesh;
+    if (obj.geometry) obj.geometry.dispose();
+    if (obj.material) for (const m of Array.isArray(obj.material) ? obj.material : [obj.material]) mats.add(m);
+  });
+  for (const m of mats) {
+    if (m === keep) continue;
+    for (const v of Object.values(m)) if (v instanceof THREE.Texture) v.dispose();
+    m.dispose();
+  }
+}
+
 interface Particle {
   alive: boolean;
   p: THREE.Vector3;
@@ -171,6 +187,8 @@ export class View3D {
   private toolGroup = new THREE.Group();
   private toolKey = '';
   private pathLines: THREE.LineSegments | null = null;
+  /** one material for every tool-path rebuild (setOps runs on each edit) */
+  private pathMat = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.75 });
   private stockMat: THREE.MeshStandardMaterial;
   private lastVersion = -1;
   private lastBuild = 0;
@@ -291,6 +309,7 @@ export class View3D {
     const key = `${st.radius}|${st.leftZ}|${st.def.gripLength}`;
     if (key === this.chuckGroupKey) return;
     this.chuckGroupKey = key;
+    disposeTree(this.chuckGroup);
     this.chuckGroup.clear();
     const ch = chuckGeometry(st);
     const zl = st.leftZ;
@@ -341,7 +360,7 @@ export class View3D {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
     g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
-    this.pathLines = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.75 }));
+    this.pathLines = new THREE.LineSegments(g, this.pathMat);
     this.pathLines.visible = this.showPath;
     this.scene.add(this.pathLines);
     this.forceRender = true;
@@ -412,6 +431,7 @@ export class View3D {
     const key = t ? JSON.stringify(t) : 'none';
     if (key === this.toolKey) return;
     this.toolKey = key;
+    disposeTree(this.toolGroup);
     this.toolGroup.clear();
     if (!sh || !t) return;
     const insertMat = new THREE.MeshStandardMaterial({ color: t.type === 'drill' ? 0xb8bcc2 : 0xd4af37, metalness: 0.85, roughness: 0.3 });
@@ -543,6 +563,7 @@ export class View3D {
     this.lastVersion = -1;
     if (this.droppedMesh && !this.machine.stock.dropped) {
       this.scene.remove(this.droppedMesh);
+      this.droppedMesh.geometry.dispose(); // material = shared stockMat
       this.droppedMesh = null;
     }
     this.rebuildStock(performance.now(), true);

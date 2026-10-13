@@ -228,17 +228,23 @@ export function generate(s: WizardSpec, tools?: ToolDef[]): { code: string; targ
   else if (first.corner === 'R') tg.push(`G03 X${f3(first.d)} Z${f3(-c0)} R${f3(c0)}`);
   // the finished part ends at the part-off position: truncate the contour there
   const zEndPart = s.partoff.enabled ? -s.partoff.length : -Infinity;
+  let cutOff = false;
   for (let i = 1; i < p.length; i++) {
     const q = p[i];
     if (q.z < zEndPart - 1e-9) {
       const a = p[i - 1];
       const t = (zEndPart - a.z) / (q.z - a.z);
       tg.push(`G01 X${f3(a.d + (q.d - a.d) * t)} Z${f3(zEndPart)}`);
+      cutOff = true;
       break;
     }
     const corner = q.corner === 'C' ? ` ,C${f3(q.size)}` : q.corner === 'R' ? ` ,R${f3(q.size)}` : '';
     tg.push(`G01 X${f3(q.d)} Z${f3(q.z)}${corner}`);
   }
+  // Not cut off inside the profile: the part ends with the shoulder up to the bar (N200 X..).
+  // Include it, so the nose-radius fillet in that inside corner is ignored like at every other one.
+  const lastPt = p[p.length - 1];
+  if (!cutOff && lastPt && lastPt.d < D - 1e-6) tg.push(`G01 X${f3(D)}`);
   const ignore: [number, number][] = [];
   if (s.thread.enabled) ignore.push([s.thread.zEnd, s.thread.zStart]);
   if (s.groove.enabled) ignore.push([s.groove.zLeft - 0.3, s.groove.zLeft + s.groove.width + 0.3]);

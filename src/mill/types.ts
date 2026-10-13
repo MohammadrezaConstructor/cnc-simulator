@@ -36,6 +36,8 @@ export interface MillMove {
   cycle?: string;
   /** internal flag used by cutter compensation */
   __cancel?: boolean;
+  /** internal: index of the source op (keeps non-move ops in order around a compensated run) */
+  __i?: number;
 }
 
 export type MillOp =

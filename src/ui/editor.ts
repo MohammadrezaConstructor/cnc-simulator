@@ -1,4 +1,4 @@
-import { EditorState, StateEffect, StateField, type Extension, Compartment } from '@codemirror/state';
+import { EditorState, StateEffect, StateField, type Extension, Compartment, Prec } from '@codemirror/state';
 import {
   EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection,
   Decoration, type DecorationSet, hoverTooltip, gutter, GutterMarker,
@@ -222,10 +222,12 @@ export interface Editor {
   cursorLine(): number;
 }
 
-export function createEditor(parent: HTMLElement, doc: string, onChange: (s: string) => void, onCursor: (line: number) => void, ref?: EditorRef): Editor {
+export function createEditor(parent: HTMLElement, doc: string, onChange: (s: string) => void, onCursor: (line: number) => void, ref?: EditorRef, opts: { onRun?: () => void } = {}): Editor {
   if (ref) REF = ref;
   const ro = new Compartment();
   const exts: Extension[] = [
+    // Ctrl/Cmd+Enter = CYCLE START (must win over CodeMirror's insertBlankLine binding)
+    Prec.highest(keymap.of([{ key: 'Mod-Enter', run: () => { opts.onRun?.(); return !!opts.onRun; } }])),
     lineNumbers(),
     execGutter,
     lintGutter(),

@@ -10,8 +10,26 @@ const el = (tag: string, attrs: Record<string, string | number>, text?: string) 
   return e;
 };
 
+function emptyDrawing(W: number, H: number): SVGSVGElement {
+  const svg = document.createElementNS(NS, 'svg') as SVGSVGElement;
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.setAttribute('class', 'drawing');
+  svg.setAttribute('role', 'img');
+  svg.setAttribute('aria-label', 'No part drawing');
+  const t = el('text', { x: W / 2, y: H / 2, 'text-anchor': 'middle' }, 'No drawing – the target contour is empty or invalid.');
+  t.setAttribute('style', 'fill:var(--v-text);font:12px sans-serif');
+  svg.appendChild(t);
+  return svg;
+}
+
 export function partDrawing(outer: P[], inner: P[], stockR: number): SVGSVGElement {
+  // contours from imported exercises may be empty or contain garbage – never draw NaN
+  const ok = (p: P) => !!p && Number.isFinite(p.z) && Number.isFinite(p.x);
+  outer = (outer ?? []).filter(ok);
+  inner = (inner ?? []).filter(ok);
+  if (!Number.isFinite(stockR) || stockR < 0) stockR = 0;
   const all = outer.concat(inner);
+  if (all.length < 2) return emptyDrawing(520, 120);
   const zmin = Math.min(...all.map((p) => p.z));
   const zmax = Math.max(...all.map((p) => p.z), 0);
   const rmax = Math.max(stockR, ...all.map((p) => p.x));

@@ -137,10 +137,10 @@
             <label class="tog"><input type="checkbox" id="tSkip" /><span>BLOCK SKIP</span></label>
           </div>
           <div class="ovr">
-            <div class="ovr-row"><label>Feed override</label><input type="range" id="ovFeed" min="0" max="150" step="10" value="100" /><b id="ovFeedV">100%</b></div>
+            <div class="ovr-row"><label>Feed override</label><input type="range" id="ovFeed" aria-label="Feed override" min="0" max="150" step="10" value="100" /><b id="ovFeedV">100%</b></div>
             <div class="ovr-row"><label>Rapid override</label><div class="seg small" id="ovRapid"><button data-v="0.05">F0</button><button data-v="0.25">25</button><button data-v="0.5">50</button><button data-v="1" class="on">100</button></div></div>
-            <div class="ovr-row"><label>Spindle override</label><input type="range" id="ovSpindle" min="50" max="120" step="10" value="100" /><b id="ovSpindleV">100%</b></div>
-            <div class="ovr-row"><label>Simulation speed</label><input type="range" id="simSpeed" min="0" max="8" step="1" value="4" /><b id="simSpeedV">×4</b></div>
+            <div class="ovr-row"><label>Spindle override</label><input type="range" id="ovSpindle" aria-label="Spindle override" min="50" max="120" step="10" value="100" /><b id="ovSpindleV">100%</b></div>
+            <div class="ovr-row"><label>Simulation speed</label><input type="range" id="simSpeed" aria-label="Simulation speed" min="0" max="8" step="1" value="4" /><b id="simSpeedV">×4</b></div>
           </div>
           <div class="load">
             <div class="load-row"><label>Spindle load</label><div class="bar"><i id="loadBar"></i></div><b id="loadV">0.0 kW</b></div>
@@ -159,7 +159,7 @@
           </div>
           <div class="mode-panel hidden" id="panelMDI">
             <label class="muted">Type blocks and press CYCLE START (modal state is kept):</label>
-            <textarea id="mdiText" rows="4" spellcheck="false">T02 M06
+            <textarea id="mdiText" aria-label="MDI blocks" rows="4" spellcheck="false">T02 M06
 S8000 M03
 G43 H02 G00 X0 Y0 Z50.</textarea>
             <div class="mdi-hist" id="mdiHist"></div>
@@ -171,9 +171,9 @@ G43 H02 G00 X0 Y0 Z50.</textarea>
               <span></span><button data-jog="y-">Y−</button><span></span>
             </div>
             <div class="ovr-row"><label>Increment</label><div class="seg small" id="jogInc"><button data-v="0">cont.</button><button data-v="0.01">0.01</button><button data-v="0.1">0.1</button><button data-v="1" class="on">1</button><button data-v="10">10</button></div></div>
-            <div class="ovr-row"><label>Jog feed</label><input type="range" id="jogFeed" min="10" max="3000" step="10" value="500" /><b id="jogFeedV">500 mm/min</b></div>
-            <div class="ovr-row"><label>Spindle</label><div class="seg small"><button id="spCW">CW</button><button id="spStop">STOP</button><button id="spCCW">CCW</button></div><input type="number" id="spRpm" value="3000" min="0" max="12000" step="100" class="num" /></div>
-            <div class="ovr-row"><label>Tool</label><select id="jogTool"></select><button id="jogCool">Coolant</button></div>
+            <div class="ovr-row"><label>Jog feed</label><input type="range" id="jogFeed" aria-label="Jog feed" min="10" max="3000" step="10" value="500" /><b id="jogFeedV">500 mm/min</b></div>
+            <div class="ovr-row"><label>Spindle</label><div class="seg small"><button id="spCW">CW</button><button id="spStop">STOP</button><button id="spCCW">CCW</button></div><input type="number" id="spRpm" aria-label="Spindle speed for jogging (rpm)" value="3000" min="0" max="12000" step="100" class="num" /></div>
+            <div class="ovr-row"><label>Tool</label><select id="jogTool" aria-label="Tool for jogging"></select><button id="jogCool">Coolant</button></div>
             <p class="muted small">Keyboard: arrows = X/Y, PgUp/PgDn = Z (Shift = rapid). With the spindle on the tool really cuts.</p>
           </div>
         </aside>

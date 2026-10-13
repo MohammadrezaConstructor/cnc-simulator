@@ -29,11 +29,27 @@ const numIn = (v: number, set: (v: number) => void, attrs: Record<string, unknow
     },
   });
 
+/** give form controls that have no accessible name the text of their visible label as aria-label:
+ *  in a `.form` grid every <label> names the control(s) that follow it */
+export function nameControls(root: Element) {
+  const forms = root.matches('.form') ? [root] : Array.from(root.querySelectorAll('.form'));
+  for (const form of forms) {
+    let label = '';
+    for (const c of Array.from(form.children)) {
+      if (c.tagName === 'LABEL') label = (c.textContent ?? '').trim();
+      else if (label && c.matches('input, select, textarea') && !c.hasAttribute('aria-label')) c.setAttribute('aria-label', label);
+    }
+  }
+}
+
 const toolSelect = (tools: ToolDef[], types: string[], value: number, set: (v: number) => void) =>
   h('select', { onchange: (e: Event) => set(+(e.target as HTMLSelectElement).value) },
     tools.filter((t) => types.includes(t.type)).map((t) => h('option', { value: String(t.id), selected: t.id === value }, `T${String(t.id).padStart(2, '0')} ${t.name}`)));
 
 let lastSpec: WizardSpec | null = null;
+
+/** two columns on a wide screen, one on a phone – never wider than the dialog (no sideways scrolling) */
+const WIZ_GRID = { gridTemplateColumns: 'repeat(auto-fit, minmax(min(320px, 100%), 1fr))' };
 
 export function wizardDialog(app: WizardApi) {
   const s: WizardSpec = lastSpec ? JSON.parse(JSON.stringify(lastSpec)) : defaultSpec(app.stockDef);
@@ -62,27 +78,34 @@ export function wizardDialog(app: WizardApi) {
     const rows = s.points.map((p, i) =>
       h('tr', null,
         h('td', null, String(i + 1)),
-        h('td', null, numIn(p.d, (v) => { p.d = v; refresh(); }, { min: 0 })),
-        h('td', null, numIn(p.z, (v) => { p.z = v; refresh(); }, { max: 0 })),
-        h('td', null, h('select', { onchange: (e: Event) => { p.corner = (e.target as HTMLSelectElement).value as ProfilePoint['corner']; refresh(); } },
+        h('td', null, numIn(p.d, (v) => { p.d = v; refresh(); }, { min: 0, 'aria-label': `Point ${i + 1} diameter` })),
+        h('td', null, numIn(p.z, (v) => { p.z = v; refresh(); }, { max: 0, 'aria-label': `Point ${i + 1} Z` })),
+        h('td', null, h('select', { 'aria-label': `Point ${i + 1} corner`, onchange: (e: Event) => { p.corner = (e.target as HTMLSelectElement).value as ProfilePoint['corner']; refresh(); } },
           (['none', 'C', 'R'] as const).map((c) => h('option', { value: c, selected: c === p.corner }, c === 'none' ? 'sharp' : c === 'C' ? 'chamfer ,C' : 'radius ,R')))),
-        h('td', null, numIn(p.size, (v) => { p.size = v; refresh(); }, { min: 0 })),
-        h('td', null,
-          h('button', { title: 'Insert a point below', onclick: () => { s.points.splice(i + 1, 0, { ...p, corner: 'none', size: 0 }); renderPoints(); } }, '+'),
-          h('button', { title: 'Delete point', disabled: s.points.length <= 2, onclick: () => { s.points.splice(i, 1); renderPoints(); } }, '✕')),
+        h('td', null, numIn(p.size, (v) => { p.size = v; refresh(); }, { min: 0, 'aria-label': `Point ${i + 1} corner size` })),
+        h('td', { style: { whiteSpace: 'nowrap' } },
+          h('button', { title: 'Insert a point below', 'aria-label': `Insert a point below point ${i + 1}`, onclick: () => { s.points.splice(i + 1, 0, { ...p, corner: 'none', size: 0 }); renderPoints(); } }, '+'),
+          h('button', { title: 'Delete point', 'aria-label': `Delete point ${i + 1}`, disabled: s.points.length <= 2, onclick: () => { s.points.splice(i, 1); renderPoints(); } }, '✕')),
       ),
     );
     fill(pointsHost, h('table', null, h('tr', null, ['#', 'Ø', 'Z', 'Corner', 'Size', ''].map((c) => h('th', null, c))), rows));
     refresh();
   };
 
-  const section = (title: string, ...kids: Node[]) => h('fieldset', { class: 'wiz-sec' }, h('legend', null, title), ...kids);
-  const row = (label: string, ...kids: Node[]) => h('div', { class: 'wiz-row' }, h('label', null, label), ...kids);
+  // min-width:0 – a fieldset defaults to min-content width and would push the dialog sideways on a phone
+  const section = (title: string, ...kids: Node[]) => h('fieldset', { class: 'wiz-sec', style: { minWidth: '0' } }, h('legend', null, title), ...kids);
+  const row = (label: string, ...kids: Node[]) => {
+    // name the controls after the row label; "A · B" / "A × B" labels name several controls in order
+    const ctrls = kids.filter((k): k is HTMLElement => k instanceof HTMLElement && k.matches('input, select, textarea'));
+    const parts = label.split(/\s[·×]\s/);
+    ctrls.forEach((c, i) => c.setAttribute('aria-label', ctrls.length === 1 ? label : parts.length === ctrls.length ? parts[i] : `${label} ${i + 1}`));
+    return h('div', { class: 'wiz-row', style: { minWidth: '0' } }, h('label', { style: { maxWidth: '100%' } }, label), ...kids);
+  };
   const check = (v: boolean, set: (v: boolean) => void) => h('input', { type: 'checkbox', checked: v, onchange: (e: Event) => { set((e.target as HTMLInputElement).checked); refresh(); } });
 
   const body = h('div', { class: 'wiz' },
     h('p', { class: 'muted' }, 'Describe the finished outside contour point by point (from the front face towards the chuck), pick the operations, and the wizard writes a complete, commented program – plus the drawing for "Check part". Corners use the direct ,C / ,R words.'),
-    h('div', { class: 'wiz-grid' },
+    h('div', { class: 'wiz-grid', style: WIZ_GRID },
       h('div', null,
         section('Part and bar',
           row('Name', h('input', { type: 'text', value: s.name, oninput: (e: Event) => (s.name = (e.target as HTMLInputElement).value) })),
@@ -249,6 +272,8 @@ export function builderDialog(app: BuilderApi) {
   drawPreview();
   const outerTa = txt('outer', 8);
   const innerTa = txt('inner', 4);
+  outerTa.setAttribute('aria-label', 'Target – outer contour (G-code, Ø values)');
+  innerTa.setAttribute('aria-label', 'Target – bore contour (optional)');
   outerTa.addEventListener('change', drawPreview);
   innerTa.addEventListener('change', drawPreview);
   const build = (): Exercise | null => {
@@ -276,7 +301,7 @@ export function builderDialog(app: BuilderApi) {
     h('p', { class: 'muted' }, machined
       ? 'The target contour was taken from the part you just machined, and your current program becomes the reference solution. Edit anything before saving.'
       : 'Tip: run your reference program first – the target contour is then filled in from the machined part automatically.'),
-    h('div', { class: 'wiz-grid' },
+    h('div', { class: 'wiz-grid', style: WIZ_GRID },
       h('div', { class: 'form' },
         h('label', null, 'Title'), h('input', { type: 'text', value: f.title, oninput: (e: Event) => (f.title = (e.target as HTMLInputElement).value) }),
         h('label', null, 'Level'), h('select', { onchange: (e: Event) => (f.level = (e.target as HTMLSelectElement).value) }, ['Beginner', 'Intermediate', 'Advanced'].map((l) => h('option', { selected: l === f.level }, l))),
@@ -293,6 +318,7 @@ export function builderDialog(app: BuilderApi) {
       ),
     ),
   );
+  nameControls(body);
   openDialog({
     title: 'Create an exercise from this program',
     body,

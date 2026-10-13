@@ -40,7 +40,66 @@ export interface DialogButton {
   onClick?: () => boolean | void;
 }
 
-let openCount = 0;
+/** open dialogs, topmost last – only the top one reacts to Esc / Tab */
+const dialogStack: { dlg: HTMLElement; close: () => void }[] = [];
+const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+document.addEventListener(
+  'keydown',
+  (e) => {
+    const top = dialogStack[dialogStack.length - 1];
+    if (!top) return;
+    if (e.key === 'Escape') {
+      // the editor inside a dialog or an open <select> handle Esc themselves
+      if (e.defaultPrevented) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      top.close();
+    } else if (e.key === 'Tab') {
+      // keep keyboard focus inside the (modal) dialog
+      const f = Array.from(top.dlg.querySelectorAll<HTMLElement>(FOCUSABLE)).filter((x) => x.offsetParent !== null || x === document.activeElement);
+      if (!f.length) return;
+      const first = f[0], last = f[f.length - 1];
+      const inside = top.dlg.contains(document.activeElement);
+      if (e.shiftKey && (document.activeElement === first || !inside)) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && (document.activeElement === last || !inside)) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+  },
+  true,
+);
+
+/** give every form control in a dialog an accessible name: the <label> placed before it in a
+ *  `.form` grid, or the column header (+ row header) of the table cell it sits in */
+function autoLabel(root: HTMLElement) {
+  for (const c of root.querySelectorAll<HTMLElement>('input:not([type=hidden]), select, textarea')) {
+    if (c.hasAttribute('aria-label') || c.closest('label') || (c.id && root.querySelector(`label[for="${CSS.escape(c.id)}"]`))) continue;
+    let name = '';
+    // the grid cell of a .form that contains the control, and the label before it
+    let cell: HTMLElement = c;
+    while (cell.parentElement && cell.parentElement !== root && !cell.parentElement.classList.contains('form')) cell = cell.parentElement;
+    const prev = cell.parentElement?.classList.contains('form') ? cell.previousElementSibling : null;
+    if (prev?.tagName === 'LABEL') {
+      name = prev.textContent ?? '';
+      const sib = cell === c ? [c] : Array.from(cell.querySelectorAll('input, select, textarea'));
+      if (sib.length > 1) name += ` ${sib.indexOf(c) + 1}`;
+    } else {
+      const td = c.closest('td');
+      const tr = td?.parentElement;
+      const head = td?.closest('table')?.querySelector('tr');
+      if (td && tr && head && head !== tr) {
+        const col = Array.from(tr.children).indexOf(td);
+        name = [tr.children[0]?.textContent, head.children[col]?.textContent].filter(Boolean).join(' ');
+      }
+    }
+    name = name.replace(/\s+/g, ' ').trim();
+    if (name) c.setAttribute('aria-label', name);
+  }
+}
+
 export function openDialog(o: { title: string; body: Node; buttons?: DialogButton[]; size?: 'wide' | 'narrow'; onClose?: () => void }) {
   const root = document.getElementById('dialogRoot')!;
   const prevFocus = document.activeElement as HTMLElement | null;
@@ -48,17 +107,13 @@ export function openDialog(o: { title: string; body: Node; buttons?: DialogButto
   const close = () => {
     if (closed) return;
     closed = true;
+    mo.disconnect();
     back.remove();
-    openCount--;
-    document.removeEventListener('keydown', onKey, true);
+    const i = dialogStack.findIndex((d) => d.dlg === dlg);
+    if (i >= 0) dialogStack.splice(i, 1);
+    document.body.classList.toggle('dlg-open', dialogStack.length > 0);
     o.onClose?.();
     prevFocus?.focus?.();
-  };
-  const onKey = (e: KeyboardEvent) => {
-    if (e.key === 'Escape') {
-      e.stopPropagation();
-      close();
-    }
   };
   const foot = (o.buttons ?? [{ label: 'Close' }]).map((b) =>
     h('button', { class: b.primary ? 'primary' : '', onclick: () => (b.onClick?.() === false ? null : close()) }, b.label),
@@ -72,12 +127,33 @@ export function openDialog(o: { title: string; body: Node; buttons?: DialogButto
   );
   const back = h('div', { class: 'dlg-backdrop', onmousedown: (e: MouseEvent) => e.target === back && close() }, dlg);
   root.appendChild(back);
-  openCount++;
-  document.addEventListener('keydown', onKey, true);
+  autoLabel(dlg);
+  // dialogs re-render parts of themselves (tables, wizard rows) – name the new controls too
+  let pending = false;
+  const mo = new MutationObserver(() => {
+    if (pending) return;
+    pending = true;
+    queueMicrotask(() => {
+      pending = false;
+      autoLabel(dlg);
+    });
+  });
+  mo.observe(dlg, { childList: true, subtree: true });
+  dialogStack.push({ dlg, close });
+  document.body.classList.add('dlg-open');
   (dlg.querySelector('.dlg-body input, .dlg-body button, .dlg-foot button') as HTMLElement | null)?.focus();
   return close;
 }
-export const dialogOpen = () => openCount > 0;
+export const dialogOpen = () => dialogStack.length > 0;
+
+/** true when a global keyboard shortcut must not act on this event: it was already handled
+ *  (editor, search panel, autocomplete), or the focus is on a control that uses the key itself */
+export function keyBelongsToControl(e: KeyboardEvent) {
+  if (e.defaultPrevented) return true;
+  const t = e.target as HTMLElement | null;
+  if (!t || !t.closest) return false;
+  return !!t.closest('.cm-editor, input, textarea, select, button, a[href], [role="button"], [contenteditable="true"], .popover');
+}
 
 /** in-page confirmation (native confirm() is not available everywhere) */
 export function confirmDialog(message: string, okLabel: string, onOk: () => void) {

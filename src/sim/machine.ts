@@ -86,6 +86,7 @@ export function spindleRpm(sp: SpindleState, x: number, machineMax: number, over
   let n: number;
   if (sp.mode === 'rpm') n = Math.min(sp.s, machineMax);
   else {
+    // G96: sp.s is always m/min here – the interpreter converts a G20 (ft/min) S value
     const D = Math.max(0.1, Math.abs(2 * x));
     n = Math.min((1000 * sp.s) / (Math.PI * D), cap);
   }
@@ -435,7 +436,8 @@ export class Machine {
           break;
         }
         case 'dwell': {
-          const need = op.seconds - this.timer;
+          // a negative dwell (rejected by the interpreter) must never run the clock backwards
+          const need = Math.max(0, op.seconds - this.timer);
           const d = Math.min(need, budget);
           this.timer += d;
           budget -= d;
@@ -599,8 +601,9 @@ export function estimateTime(ops: Op[], settings: MachineSettings): { total: num
     opStart.push(total);
     if (op.kind === 'spindle') spindle = op.spindle;
     else if (op.kind === 'dwell') {
-      total += op.seconds;
-      add(op.line, op.seconds);
+      const sec = Math.max(0, op.seconds);
+      total += sec;
+      add(op.line, sec);
     } else if (op.kind === 'tool') {
       total += settings.toolChangeTime;
       add(op.line, settings.toolChangeTime);

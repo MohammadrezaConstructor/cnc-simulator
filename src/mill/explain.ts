@@ -3,12 +3,15 @@
 import type { Block, Word } from '../gcode/lexer';
 import { explainMacro, type Explanation } from '../gcode/explain';
 import type { MillModalSnap } from './interp';
+import type { MillSettings } from './types';
 import { findMillCode } from './ref';
 
 const num = (v: number) => (Number.isInteger(v) ? v.toFixed(0) : String(+v.toFixed(4)));
 
-export function explainMillBlock(b: Block, before?: MillModalSnap): Explanation {
+export function explainMillBlock(b: Block, before?: MillModalSnap, conv: Pick<MillSettings, 'autoLength' | 'autoRadius' | 'pointRef'> = {}): Explanation {
   if (b.macro) return explainMacro(b);
+  /** the point of the tool that Z describes */
+  const zPoint = conv.pointRef === 'center' ? 'the programmed point of the tool (tip, or the nose-radius centre of ball / bull-nose / face mills)' : 'the tool tip';
   const words: Explanation['words'] = [];
   if (b.blockDelete) words.push({ word: '/', kind: 'skip', text: 'Block delete: skipped when BLOCK SKIP is ON.' });
   if (b.o !== undefined) words.push({ word: `O${b.o}`, kind: 'n', text: `Program number ${b.o}.` });
@@ -47,7 +50,7 @@ export function explainMillBlock(b: Block, before?: MillModalSnap): Explanation 
         text = g68 ? `Rotation centre Y${num(w.value)}.` : polar ? `Polar angle ${num(w.value)}° (CCW from +X).` : abs ? `Target Y${num(w.value)}.` : `Move ${num(w.value)} mm in Y (incremental).`;
         break;
       case 'Z':
-        text = inCycle ? `Hole depth: the tool tip goes to Z${num(w.value)}${abs ? '' : ' (incremental from R)'}.` : abs ? `Target Z${num(w.value)} ${w.value < 0 ? '(inside the material when Z0 is the top face)' : '(above Z0)'}.` : `Move ${num(w.value)} mm in Z.`;
+        text = inCycle ? `Hole depth: ${zPoint} goes to Z${num(w.value)}${abs ? '' : ' (incremental from R)'}.` : abs ? `Target Z${num(w.value)} ${w.value < 0 ? '(inside the material when Z0 is the top face)' : '(above Z0)'}.` : `Move ${num(w.value)} mm in Z.`;
         break;
       case 'R':
         text = g68 ? `Rotation angle ${num(w.value)}°.` : inCycle ? `R-plane at Z${num(w.value)}: rapid stops here before the cutting feed starts.` : `Arc radius ${num(Math.abs(w.value))} mm${w.value < 0 ? ' (arc > 180°)' : ''}.`;
@@ -84,7 +87,7 @@ export function explainMillBlock(b: Block, before?: MillModalSnap): Explanation 
         break;
       case 'D':
         kind = 't';
-        text = `Radius offset register D${String(Math.round(w.value)).padStart(2, '0')} (tool radius for G41/G42).`;
+        text = `Radius offset register D${String(Math.round(w.value)).padStart(2, '0')} (tool radius for G41/G42)${conv.autoRadius ? ' – overrides the automatic radius' : ''}.`;
         break;
       case ',C':
         kind = 'g';
@@ -106,9 +109,10 @@ export function explainMillBlock(b: Block, before?: MillModalSnap): Explanation 
   const axis = !!(x || y || z);
   if (b.words.length === 0 && b.comment) summary = `Comment: “${b.comment.trim()}” – ignored by the control.`;
   else if (b.percent && !b.words.length) summary = 'Tape start/end marker.';
-  else if (ms.includes(6)) summary = 'Tool change: Z goes up to the tool-change position, the spindle stops, the new tool is loaded.';
+  else if (ms.includes(6)) summary = `Tool change: Z goes up to the tool-change position, the spindle stops, the new tool is loaded${conv.autoLength ? ' and its length is applied automatically (no G43 needed)' : ' – program G43 H… before the first Z move'}.`;
   else if (gs.includes(28)) summary = 'Return to the machine home position (via the intermediate point given).';
-  else if (gs.includes(43)) summary = `Tool length compensation ON – from now on Z is the tip of the tool${axis ? `; move to ${dest}` : ''}.`;
+  else if (gs.includes(43)) summary = `Tool length compensation ON – from now on Z is ${zPoint}${conv.autoLength ? ' (overrides the automatic length until G49 or M06)' : ''}${axis ? `; move to ${dest}` : ''}.`;
+  else if (gs.includes(49) && conv.autoLength && !axis) summary = 'G49 with automatic length compensation: an explicit G43/G44 is cancelled – the length of the tool in the spindle stays active.';
   else if (gs.includes(80)) summary = 'Cancel the hole cycle.';
   else if (gs.includes(68)) summary = 'Rotate the coordinate system.';
   else if (inCycle && (axis || gs.some((g) => g > 72 && g < 90))) summary = `${findMillCode(`G${cyc}`)?.title ?? `G${cyc}`}: ${x || y ? `hole at ${[x && `X${val(x)}`, y && `Y${val(y)}`].filter(Boolean).join(' ')}` : 'hole at the current position'}.`;

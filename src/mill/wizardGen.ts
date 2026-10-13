@@ -157,8 +157,10 @@ export function generateMill(s: MillWizardSpec, tools: MillTool[], maxRpm = 8000
   // feature depths are measured from the finished top; with Z0 on the raw top it lies at Z−allowance
   const zf = g.finished;
   let zt = 0; // height of the programmed point above the tip (nose-centre reference)
-  /** Z word for a height measured from the finished top (cut: the tip must reach it) */
-  const Z = (z: number, cut = true) => f3(z + zf + (cut ? zt : 0));
+  /** Z word that puts the tool TIP at a height measured from the finished top */
+  const Z = (z: number) => f3(z + zf + zt);
+  /** Z word for a clearance / R-plane height above the RAW top (safe before the top is faced) */
+  const Zc = (h: number) => f3(g.top + h + zt);
   let current = 0;
   let opNo = 10;
   const safe = 25;
@@ -198,7 +200,7 @@ export function generateMill(s: MillWizardSpec, tools: MillTool[], maxRpm = 8000
       const step = t.diameter * 0.7;
       let y = y0 + R * 0.4;
       start(t.id, x0 - R - 5, y);
-      add(`Z${Z(f.z + 2)}`);
+      add(`Z${Zc(2)}`);
       add(`G01 Z${Z(f.z)} F${feed}`);
       let dir = 1;
       for (let k = 0; k < 200; k++) {
@@ -215,7 +217,7 @@ export function generateMill(s: MillWizardSpec, tools: MillTool[], maxRpm = 8000
       const R = t.diameter / 2;
       const so = t.diameter * 0.6;
       start(t.id, f.x, f.y);
-      add(`Z${Z(2, false)}`);
+      add(`Z${Zc(2)}`);
       const levels: number[] = [];
       for (let z = -f.step; z > -f.depth + 1e-9; z -= f.step) levels.push(z);
       levels.push(-f.depth);
@@ -253,6 +255,17 @@ export function generateMill(s: MillWizardSpec, tools: MillTool[], maxRpm = 8000
             k++;
           }
           if (!loops.length || loops[loops.length - 1][0] !== ax) loops.push([ax, ay]);
+          const [ix, iy] = loops[0];
+          if (Math.abs(ix - iy) > 1e-6) {
+            // long pocket: the helix only clears the middle – cut along the long axis first
+            if (ix > iy) {
+              add(`G01 X${f3(f.x + ix)} Y${f3(f.y)}      (CENTRE PASS)`);
+              add(`X${f3(f.x - ix)}`);
+            } else {
+              add(`G01 X${f3(f.x)} Y${f3(f.y + iy)}      (CENTRE PASS)`);
+              add(`Y${f3(f.y - iy)}`);
+            }
+          }
           loops.forEach(([hx, hy], i) => {
             const last = i === loops.length - 1;
             const cr = last && rc > 0 ? ` ,R${f3(rc)}` : '';
@@ -265,7 +278,7 @@ export function generateMill(s: MillWizardSpec, tools: MillTool[], maxRpm = 8000
           });
           add(`G01 X${f3(f.x + ax - 0.5)}`);
         }
-        add(`G00 Z${Z(2, false)}`);
+        add(`G00 Z${Zc(2)}`);
         add(`X${f3(f.x)} Y${f3(f.y)}`);
         zPrev = z;
       });
@@ -280,7 +293,7 @@ export function generateMill(s: MillWizardSpec, tools: MillTool[], maxRpm = 8000
       levels.push(-f.depth);
       const sx = f.x + hx + R + so * Math.max(1, f.rings) + 3;
       start(t.id, sx, f.y);
-      add(`Z${Z(2, false)}`);
+      add(`Z${Zc(2)}`);
       for (const z of levels) {
         add(`(LEVEL Z${Z(z)})`);
         add(`G01 Z${Z(z)} F${Math.round(feed / 2)}`);
@@ -312,16 +325,11 @@ export function generateMill(s: MillWizardSpec, tools: MillTool[], maxRpm = 8000
       for (let z = -f.step; z > -f.depth + 1e-9; z -= f.step) levels.push(z);
       levels.push(-f.depth);
       start(t.id, f.x1, f.y1);
-      add(`Z${Z(1, false)}`);
-      let atStart = true;
+      add(`Z${Zc(1)}`);
       for (const z of levels) {
-        // ramp along the slot, then cut back at full depth
-        const [ax, ay, bx, by] = atStart ? [f.x2, f.y2, f.x1, f.y1] : [f.x1, f.y1, f.x2, f.y2];
-        add(`G01 X${f3(ax)} Y${f3(ay)} Z${Z(z)} F${Math.round(feed * 0.6)}    (RAMP)`);
-        add(`X${f3(bx)} Y${f3(by)} F${Math.round(feed * 0.6)}`);
-        atStart = !atStart;
-        void ax;
-        void ay;
+        // ramp along the slot to the end, then cut back to the start at full depth
+        add(`G01 X${f3(f.x2)} Y${f3(f.y2)} Z${Z(z)} F${Math.round(feed * 0.6)}    (RAMP)`);
+        add(`X${f3(f.x1)} Y${f3(f.y1)}`);
       }
       clearZ();
     } else if (f.kind === 'holes') {
@@ -352,7 +360,7 @@ export function generateMill(s: MillWizardSpec, tools: MillTool[], maxRpm = 8000
         const sp = toolOn(spot.id, 'spot drill');
         const spotDepth = Math.min(drill.diameter / 2 + 0.3, spot.diameter / 2);
         start(spot.id, first[0], first[1]);
-        holeLines(`G99 G82 Z${Z(-spotDepth)} R${Z(2, false)} P200 F${sp.feed}`);
+        holeLines(`G99 G82 Z${Z(-spotDepth)} R${Zc(2)} P200 F${sp.feed}`);
         clearZ();
       }
       const dp = toolOn(drill.id, `drill D${drill.diameter} deep ${f.depth}`);
@@ -360,13 +368,13 @@ export function generateMill(s: MillWizardSpec, tools: MillTool[], maxRpm = 8000
       const zd = -(f.depth + (f.tap ? 0 : tipLen));
       start(drill.id, first[0], first[1]);
       const deep = f.depth > 3 * drill.diameter;
-      holeLines(deep ? `G99 G83 Z${Z(zd)} R${Z(2, false)} Q${f3(drill.diameter)} F${dp.feed}` : `G99 G81 Z${Z(zd)} R${Z(2, false)} F${dp.feed}`);
+      holeLines(deep ? `G99 G83 Z${Z(zd)} R${Zc(2)} Q${f3(drill.diameter)} F${dp.feed}` : `G99 G81 Z${Z(zd)} R${Zc(2)} F${dp.feed}`);
       clearZ();
       if (f.tap) {
         const tap = tools.find((x) => x.id === f.tapTool)!;
         const tp = toolOn(tap.id, `tap M${tap.diameter} x ${tap.pitch}`);
         start(tap.id, first[0], first[1]);
-        holeLines(`G99 G84 Z${Z(-(f.depth - 2 * tap.pitch))} R${Z(5, false)} F${f3(tp.feed)}      (F = PITCH X S)`);
+        holeLines(`G99 G84 Z${Z(-(f.depth - 2 * tap.pitch))} R${Zc(5)} F${f3(tp.feed)}      (F = PITCH X S)`);
         clearZ();
       }
     }

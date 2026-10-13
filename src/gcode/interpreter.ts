@@ -292,10 +292,19 @@ class Interpreter {
     }
   }
 
+  /**
+   * Is pc still part of the block range [a,b]? Sub-programs called (M98) from inside the range
+   * are followed until their M99 returns into it.
+   */
+  private inRangeFlow(pc: number, a: number, b: number, depth0: number): boolean {
+    return pc < this.blocks.length && (this.stack.length > depth0 || (pc >= a && pc <= b));
+  }
+
   /** execute a block range [a,b] (used by G70) */
   private runRange(a: number, b: number) {
     let pc = a;
-    while (pc <= b && pc < this.blocks.length) {
+    const depth0 = this.stack.length;
+    while (this.inRangeFlow(pc, a, b, depth0)) {
       const c = this.step(pc, true);
       if (c.end) return;
       pc = c.next ?? pc + 1;
@@ -362,12 +371,17 @@ class Interpreter {
     if (ms.filter((m) => m !== 98).length > 1) this.diag(L, 'warning', 'More than one M-code in a block – many controls allow only one.');
 
     // ---- modal codes that affect the interpretation of this block
+    // spindle.s is always kept in rpm (G97) or m/min (G96); in G20 a G96 S is programmed in ft/min
+    const sFactorBefore = cssFactor(st);
     if (gs.includes(20)) st.inch = true;
     if (gs.includes(21)) st.inch = false;
     const sc = st.inch ? 25.4 : 1;
     const val = (k: string) => (w[k] ? w[k].value * sc : undefined);
-    /** Fanuc "least input increment" words (P/Q in G74/G75/G76): without decimal point = 0.001 mm */
-    const um = (k: string) => (w[k] ? (w[k].hasDecimal ? w[k].value * sc : (w[k].value / 1000) * sc) : undefined);
+    /**
+     * Fanuc "least input increment" words (P/Q in G74/G75/G76): without a decimal point they count
+     * in 0.001 mm (G21) or 0.0001 in (G20).
+     */
+    const um = (k: string) => (w[k] ? (w[k].hasDecimal ? w[k].value * sc : w[k].value * (st.inch ? 0.0001 * 25.4 : 0.001)) : undefined);
 
     let motionInBlock: number | null = null;
     let cycleG: number | null = null;
@@ -430,12 +444,18 @@ class Interpreter {
         st.spindle.maxRpm = Math.min(w.S.value, this.cfg.machine.maxRpm);
         spindleChanged = true;
       } else {
-        st.spindle.s = w.S.value;
+        // G96 in G20: S is the surface speed in ft/min → stored as m/min
+        st.spindle.s = w.S.value * cssFactor(st);
         spindleChanged = true;
         if (st.spindle.mode === 'rpm' && w.S.value > this.cfg.machine.maxRpm) {
           this.diag(L, 'warning', `S${w.S.raw} exceeds the machine maximum of ${this.cfg.machine.maxRpm} rpm – clamped`);
         }
       }
+    }
+    if (!(w.S && nonModal !== 50) && cssFactor(st) !== sFactorBefore) {
+      // G96/G97 or G20/G21 changed the meaning of the modal S value
+      st.spindle.s = (st.spindle.s / sFactorBefore) * cssFactor(st);
+      spindleChanged = true;
     }
     if (gs.includes(96) || gs.includes(97)) spindleChanged = true;
     if (gs.includes(96) && !this.warnedCssNoClamp && st.spindle.maxRpm >= this.cfg.machine.maxRpm) {
@@ -530,6 +550,7 @@ class Interpreter {
       if (has('X')) sec = w.X.value;
       else if (has('U')) sec = w.U.value;
       else if (has('P')) sec = w.P.hasDecimal ? w.P.value : w.P.value / 1000;
+      if (sec < 0) throw new Error(`G04: the dwell time must not be negative (${sec} s)`);
       this.push({ kind: 'dwell', seconds: sec, line: L });
     } else if (hasAxis) {
       ctl = this.motion(b, w, val, target());
@@ -905,32 +926,47 @@ class Interpreter {
     return -1;
   }
 
+  /**
+   * Read the finishing profile N(ns)…N(nf) without executing it. Macro control flow (IF-GOTO,
+   * GOTO, WHILE, M98/M99) is followed like a real run; modal state, macro variables and the
+   * sub-program stack are restored afterwards, because the profile is executed for real later
+   * (G70) – or skipped.
+   */
   private captureProfile(ns: number, nf: number, L: number): CY.Seg[] {
     const saved = cloneState(this.st);
-    const savedGuard = this.guard;
+    const savedVars = new Map(this.vars);
+    const savedStack = this.stack.map((f) => ({ ...f }));
+    const savedTrace = new Map(this.varTrace);
+    const depth0 = this.stack.length;
     this.capture = [];
-    try {
-      for (let i = ns; i <= nf; i++) {
-        const b = this.blocks[i];
-        if (b.blockDelete && this.cfg.blockSkip) continue;
-        if (b.macro) {
-          this.macro(b, i);
-          continue;
-        }
-        if (b.words.length === 0) continue;
-        this.exec(b, i, true);
-      }
-      this.flushCorner();
-    } catch (e) {
+    const restore = () => {
       this.corner = null;
       this.capture = null;
       this.st = saved;
+      this.vars = savedVars;
+      this.stack = savedStack;
+      this.varTrace = savedTrace;
+    };
+    try {
+      let pc = ns;
+      while (this.inRangeFlow(pc, ns, nf, depth0)) {
+        if (++this.guard > 200000) throw new Error('endless loop (GOTO/WHILE/M98) inside the profile – reading it was aborted');
+        const b = this.blocks[pc];
+        for (const e of b.errors) this.diag(e.line, e.severity, e.message);
+        let c: Ctl = {};
+        if (b.blockDelete && this.cfg.blockSkip) c = {};
+        else if (b.macro) c = this.macro(b, pc);
+        else if (b.words.length) c = this.exec(b, pc, true);
+        if (c.end) throw new Error('the program ends inside the profile (M02/M30/M99 or #3000 alarm)');
+        pc = c.next ?? pc + 1;
+      }
+      this.flushCorner();
+    } catch (e) {
+      restore();
       throw new Error(`In finishing profile (line ${L + 1}): ${(e as Error).message}`);
     }
     const segs = this.capture;
-    this.capture = null;
-    this.st = saved;
-    this.guard = savedGuard;
+    restore();
     return segs.filter((s) => dist(s.from, s.to) > 1e-9 || s.type === 'arc');
   }
 
@@ -1006,7 +1042,7 @@ class Interpreter {
         const moves = CY.roughCycle(
           s,
           segs,
-          { d: slot.d, e: slot.e, du, dw, axis: g === 71 ? 'x' : 'z', feedApproach: segs[0].type === 'linear', typeII },
+          { d: slot.d, e: slot.e, du, dw, axis: g === 71 ? 'x' : 'z', feedApproach: segs[0].type === 'linear', typeII, pq: [`N${w.P.raw}`, `N${w.Q.raw}`] },
           (m) => this.diag(L, 'warning', m),
         );
         this.emitCycle(moves, L, `G${g}`);
@@ -1043,6 +1079,16 @@ class Interpreter {
         const t = tgt();
         const p = um('P') ?? 0;
         const q = um('Q') ?? 0;
+        for (const [k, v, what] of [['P', p, g === 74 ? 'X shift' : 'peck depth'], ['Q', q, g === 74 ? 'peck depth' : 'Z shift']] as const) {
+          if (has(k) && !w[k].hasDecimal && v > 0 && v < 0.1) {
+            this.diag(
+              L,
+              'warning',
+              `G${g} ${k}${w[k].raw} = ${+v.toFixed(4)} mm ${what} – without a decimal point ${k} is in ${st.inch ? '0.0001 in' : 'µm (0.001 mm)'}`,
+              `Did you mean ${k}${w[k].raw}${st.inch ? '0000' : '000'} or ${k}${w[k].raw}. (${w[k].raw} ${st.inch ? 'in' : 'mm'})?`,
+            );
+          }
+        }
         const e = g === 74 ? st.g74e : st.g75e;
         const moves = g === 74 ? CY.g74(s, t.x, t.z, p, q, e) : CY.g75(s, t.x, t.z, p, q, e);
         if (g === 74 && Math.abs(s.x) > 1e-6 && !has('X') && !has('U')) {
@@ -1067,6 +1113,7 @@ class Interpreter {
         }
         if (!has('F')) throw new Error('G76 needs F (thread lead)');
         const lead = w.F.value * sc(st);
+        if (!(lead > 0)) throw new Error('G76 needs F (lead) > 0');
         st.feed = lead;
         const t = tgt();
         const k = um('P');
@@ -1112,6 +1159,8 @@ class Interpreter {
 }
 
 const sc = (st: InterpState) => (st.inch ? 25.4 : 1);
+/** factor from the programmed S to the stored spindle.s: G96 in G20 is ft/min → m/min */
+const cssFactor = (st: InterpState) => (st.inch && st.spindle.mode === 'css' ? 0.3048 : 1);
 
 export function interpret(src: string, cfg: InterpConfig, init?: InterpState): InterpResult {
   const blocks = lexProgram(src);

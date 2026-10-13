@@ -215,6 +215,9 @@ describe('milling examples run cleanly', () => {
       const { r, m } = runMill(ex.code, ex.stock);
       const errs = r.diags.filter((d) => d.severity === 'error');
       expect(errs, JSON.stringify(errs)).toEqual([]);
+      // reference programs must not show students any warning either
+      const warns = r.diags.filter((d) => d.severity === 'warning');
+      expect(warns, JSON.stringify(warns)).toEqual([]);
       const alarms = m.events.filter((e) => e.type === 'alarm');
       expect(alarms, JSON.stringify(alarms)).toEqual([]);
       expect(m.status).toBe('done');
@@ -385,4 +388,72 @@ describe('programming conventions & automatic work zero', () => {
       });
     }
   }
+});
+
+describe('review fixes: frames, cycles, compensation, wizard', () => {
+  const last = (src: string, c: Partial<MillConfig> = {}) => moves(interpretMill(src, cfg(c)).ops).pop()!;
+  const runS = (code: string, settings = DEFAULT_MILL, stock: BlockStock = DEFAULT_BLOCK) => {
+    const r = interpretMill(code, cfg({ settings, stock }));
+    const block = new BlockModel(stock);
+    const m = new MillMachine(block, tools, settings);
+    m.load(r.ops);
+    m.status = 'running';
+    for (let n = 0; n < 200000 && (m.status as string) === 'running'; n++) m.advance(5);
+    return { r, m, block };
+  };
+  it('G52 / G55 / G68 do not move axes that are not programmed', () => {
+    expect(last('G43 H1 G00 X0 Y0 Z10\nG52 X50\nZ5').to).toMatchObject({ x: 0, y: 0, z: 5 });
+    const w = { ...DEFAULT_MILL_WORK, 55: { x: 200, y: 0, z: 0 } };
+    expect(last('G43 H1 G00 X0 Y0 Z10\nG55\nZ5', { workOffsets: w }).to).toMatchObject({ x: 0, z: 5 });
+    // G68 without X/Y rotates about the current position
+    const t = last('G43 H1 G00 X10 Y10 Z10\nG68 R90\nG01 X20 Y10 F100').to;
+    expect(t.x).toBeCloseTo(10);
+    expect(t.y).toBeCloseTo(20);
+  });
+  it('canned cycles: K repeats in G90, data in later hole blocks, inherited R/Z after G91, polar G91 K', () => {
+    const holes = (src: string) => moves(interpretMill(src, cfg()).ops).filter((m) => m.cycle?.startsWith('G8') && m.type !== 'rapid');
+    const k = holes('G43 H1 G00 X0 Y0 Z10\nG90 G81 X10 Y5 Z-5 R2 F100 K3');
+    expect(k.length).toBe(3);
+    expect(k.every((m) => m.to.x === 10 && m.to.y === 5)).toBe(true);
+    const z = holes('G43 H1 G00 X0 Y0 Z10\nG81 X0 Y0 Z-10 R2 F100\nX30 Z-20');
+    expect(Math.min(...z.filter((m) => m.to.x === 30).map((m) => m.to.z))).toBeCloseTo(-20);
+    const g91 = holes('G43 H1 G00 X0 Y0 Z10\nG90 G81 X0 Y0 Z-5 R2 F100\nG91 G82 X10 P100');
+    expect(Math.min(...g91.filter((m) => m.to.x === 10).map((m) => m.to.z))).toBeCloseTo(-5);
+    const polar = holes('G43 H1 G00 X0 Y0 Z10\nG16\nG90 G81 X50 Y90 Z-5 R2 F100\nG91 Y90 K2').map((m) => [Math.round(m.to.x), Math.round(m.to.y)].join(','));
+    expect(new Set(polar)).toEqual(new Set(['0,50', '-50,0', '0,-50']));
+  });
+  it('cutter compensation keeps M-codes in program order across M98; D00 means no offset', () => {
+    const src = 'T2 M06\nS6000 M03 M08\nG43 H2 G00 X-20 Y-20 Z5\nG01 Z-2 F500\nG41 D2 G01 X0 Y0\nM98 P100\nM09\nG40 G01 X-20 Y-20\nM30\nO100\nY50\nX60\nM99';
+    const ops = interpretMill(src, cfg()).ops;
+    const off = ops.findIndex((o) => o.kind === 'coolant' && !o.on);
+    const lastSub = ops.map((o, i) => (o.kind === 'move' && o.line >= 10 ? i : -1)).reduce((a, b) => Math.max(a, b), -1);
+    expect(off).toBeGreaterThan(lastSub);
+    const r = interpretMill('T2 M06\nG43 H2 G00 X-20 Y-20 Z5\nG41 G01 X0 Y-10 F500\nY50\nG40 X-20', cfg());
+    expect(moves(r.ops).find((m) => m.line === 3)!.to.x).toBeCloseTo(0); // D00: no offset
+    expect(r.diags.some((d) => d.message.includes('D00'))).toBe(true);
+  });
+  it('default state with automatic length compensation does not jump in Z', () => {
+    const s = { ...DEFAULT_MILL, autoLength: true };
+    const first = moves(interpretMill('G00 X10 Y10', cfg({ settings: s })).ops)[0];
+    expect(first.to.z).toBeCloseTo(first.from.z);
+  });
+  it('wizard: ball mill with the centre reference, long pockets, slot ramps, raw stock without facing', () => {
+    const conv = { ...DEFAULT_MILL, pointRef: 'center' as const };
+    const spec = defaultMillSpec(DEFAULT_BLOCK);
+    spec.stock = { ...spec.stock, topAllowance: 3 };
+    spec.features = [
+      { kind: 'pocket', x: 50, y: 40, w: 80, l: 30, r: 6, depth: 4, step: 2, tool: 2 },
+      { kind: 'pocket', x: 50, y: 40, w: 20, l: 60, r: 5, depth: 2, step: 2, tool: 8 },
+      { kind: 'slot', x1: 10, y1: 72, x2: 90, y2: 72, depth: 3, step: 1, tool: 3 },
+    ];
+    expect(checkMillSpec(spec, tools)).toEqual([]);
+    const code = generateMill(spec, tools, 8000, conv);
+    expect(code.match(/\(RAMP\)/g)!.length).toBe(3);
+    expect(code.split('\n').filter((l) => l.includes('(RAMP)')).every((l) => l.includes('X90.'))).toBe(true);
+    const { r, m, block } = runS(code, conv, spec.stock);
+    expect(r.diags.filter((d) => d.severity === 'error'), code).toEqual([]);
+    expect(m.events.filter((e) => e.type === 'alarm'), code).toEqual([]);
+    // long pocket: no island left on the −X side of the centre
+    for (const x of [15, 25, 35, 45, 55, 65, 75, 85]) expect(block.heightAt(x, 40)!, `x=${x}`).toBeLessThan(-3.9);
+  });
 });

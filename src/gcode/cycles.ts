@@ -94,6 +94,8 @@ export function g76(s: P, p: G76Params): { moves: CMove[]; passes: number[] } {
     prev = d;
     n++;
   }
+  // never stop silently and leave one huge final cut
+  if (depths.length >= 200) throw new Error(`G76: more than 200 passes – the first depth Q${+(p.d1 * 1000).toFixed(0)} / minimum depth Q are far too small (Q without a decimal point is in µm: Q300 = 0.3 mm)`);
   if (p.fin > 0 || depths.length === 0 || depths[depths.length - 1] < roughLimit) {
     if (roughLimit > 0 && (depths.length === 0 || depths[depths.length - 1] < roughLimit - 1e-9)) depths.push(roughLimit);
   }
@@ -122,12 +124,52 @@ export function g76(s: P, p: G76Params): { moves: CMove[]; passes: number[] } {
 
 // ---------------------------------------------------------------- peck cycles G74 / G75
 
+/** upper limit for (shift positions × pecks per position) in one G74/G75 block */
+export const MAX_PECK_PLUNGES = 20000;
+
+/** number of positions from a to b in steps of `step` (both ends included) */
+function stepCount(a: number, b: number, step: number): number {
+  const d = Math.abs(b - a);
+  if (d < 1e-6) return 1;
+  return Math.ceil(d / step - 1e-9) + 1;
+}
+
+/** number of pecks needed to travel from a to b with pecks of `peck` (0 = one plunge) */
+function peckCount(a: number, b: number, peck: number): number {
+  if (!(peck > 0)) return 1;
+  return Math.max(1, Math.ceil(Math.abs(b - a) / peck - 1e-9));
+}
+
+/**
+ * Refuse P/Q values that would explode into an absurd number of moves – almost always a
+ * missing decimal point (P/Q without one are in µm).
+ */
+function checkPeckBudget(name: 'G74' | 'G75', shifts: number, pecks: number) {
+  const total = shifts * pecks;
+  if (!(total <= MAX_PECK_PLUNGES)) {
+    throw new Error(
+      `${name}: P/Q are far too small – the cycle would need about ${total < 1e9 ? String(Math.round(total)) : total.toExponential(1)} plunges ` +
+        `(${shifts} position(s) × ${pecks} peck(s); limit ${MAX_PECK_PLUNGES}). ` +
+        `P and Q without a decimal point are in µm (P1500 = 1.5 mm, Q5000 = 5 mm); write P1.5 / Q5. for millimetres.`,
+    );
+  }
+}
+
 /** G74 – face (Z-axis) peck drilling / face grooving. */
 export function g74(s: P, x1: number, z1: number, dxStep: number, dzPeck: number, e: number): CMove[] {
   const out: CMove[] = [];
   const zdir = z1 < s.z ? -1 : 1;
   const xs: number[] = [];
-  if (Math.abs(x1 - s.x) < 1e-6 || dxStep <= 0) xs.push(s.x);
+  const xMoves = Math.abs(x1 - s.x) >= 1e-6;
+  if (xMoves && !(dxStep > 0)) {
+    throw new Error(
+      'G74: the end point X/U differs from the start point but P (X shift between plunges, µm) is missing or zero (Fanuc alarm PS0062). ' +
+        'Add P (e.g. P2500 = 2.5 mm, less than the tool width) or start the cycle at the X of the hole/groove.',
+    );
+  }
+  const pecks = peckCount(s.z, z1, dzPeck);
+  checkPeckBudget('G74', xMoves ? stepCount(s.x, x1, dxStep) : 1, pecks);
+  if (!xMoves) xs.push(s.x);
   else {
     const xdir = x1 < s.x ? -1 : 1;
     for (let x = s.x; xdir * (x1 - x) > -1e-9; x += xdir * dxStep) xs.push(x);
@@ -144,7 +186,7 @@ export function g74(s: P, x1: number, z1: number, dxStep: number, dzPeck: number
       out.push({ type: 'rapid', to: P_(x, target - zdir * e), label: 'G74 chip break' });
       depth = target;
       peck++;
-      if (peck > 2000) break;
+      if (peck > pecks + 2) throw new Error(`G74: peck ${peck} did not reach Z${z1.toFixed(3)} – check Q (peck depth, µm)`);
     }
     out.push({ type: 'rapid', to: P_(x, s.z), label: 'G74 retract' });
   });
@@ -157,7 +199,16 @@ export function g75(s: P, x1: number, z1: number, dxPeck: number, dzStep: number
   const out: CMove[] = [];
   const xdir = x1 < s.x ? -1 : 1;
   const zs: number[] = [];
-  if (Math.abs(z1 - s.z) < 1e-6 || dzStep <= 0) zs.push(s.z);
+  const zMoves = Math.abs(z1 - s.z) >= 1e-6;
+  if (zMoves && !(dzStep > 0)) {
+    throw new Error(
+      'G75: the end point Z/W differs from the start point but Q (Z shift between plunges, µm) is missing or zero (Fanuc alarm PS0062). ' +
+        'Add Q (e.g. Q2500 = 2.5 mm, less than the tool width) or start the cycle at the Z of the groove.',
+    );
+  }
+  const pecks = peckCount(s.x, x1, dxPeck);
+  checkPeckBudget('G75', zMoves ? stepCount(s.z, z1, dzStep) : 1, pecks);
+  if (!zMoves) zs.push(s.z);
   else {
     const zdir = z1 < s.z ? -1 : 1;
     for (let z = s.z; zdir * (z1 - z) > -1e-9; z += zdir * dzStep) zs.push(z);
@@ -174,7 +225,7 @@ export function g75(s: P, x1: number, z1: number, dxPeck: number, dzStep: number
       out.push({ type: 'rapid', to: P_(target - xdir * e, z), label: 'G75 chip break' });
       depth = target;
       peck++;
-      if (peck > 2000) break;
+      if (peck > pecks + 2) throw new Error(`G75: peck ${peck} did not reach X${(x1 * 2).toFixed(3)} – check P (peck depth, µm)`);
     }
     out.push({ type: 'rapid', to: P_(s.x, z), label: 'G75 retract' });
   });
@@ -243,6 +294,8 @@ export interface RoughParams {
   feedApproach: boolean;
   /** type II: the profile may contain pockets (both axes in the first profile block) */
   typeII?: boolean;
+  /** sequence numbers of the first / last profile block, for messages (e.g. "N10", "N20") */
+  pq?: [string, string];
 }
 
 /** contour semi-finish pass + retract, shared by type I and II */
@@ -377,6 +430,25 @@ export function roughCycle(s: P, segs: Seg[], p: RoughParams, warn: (m: string) 
         `Use type II by adding ${p.axis === 'x' ? 'W0 (or Z)' : 'U0 (or X)'} to the first profile block, or rough it with G73.`,
     );
   }
+  if (!p.typeII) {
+    // Type I cuts every level from the start face up to the FIRST profile crossing. That is only
+    // correct when the profile moves back towards the stock side (away from the deepest level)
+    // from its first to its last block – e.g. for OD roughing the diameter must grow from N(P)
+    // to N(Q). A profile that runs the other way would be roughed straight through the part.
+    const dU = U(last) - U(first);
+    if (dU * ld > 1e-6) {
+      const ax = p.axis === 'x' ? 'X' : 'Z';
+      const kind = p.axis === 'x' ? (ld < 0 ? 'OD roughing' : 'ID roughing (boring)') : ld < 0 ? 'face roughing towards −Z' : 'face roughing towards +Z';
+      const want = p.axis === 'x' ? (ld < 0 ? 'X grows' : 'X gets smaller') : ld < 0 ? 'Z grows (back towards the start point)' : 'Z gets smaller (back towards the start point)';
+      const got = ld < 0 ? 'gets smaller' : 'grows';
+      const range = p.pq ? `from ${p.pq[0]} to ${p.pq[1]}` : 'from the first (P) to the last (Q) profile block';
+      throw new Error(
+        `${name} type I: the profile must be monotone the right way round – ${want} ${range} for ${kind}. ` +
+          `Here ${ax} ${got} along the profile, so the roughing levels would cut straight through the finished part (Fanuc alarm PS0064). ` +
+          `Describe the profile in the other direction, or use type II (add ${p.axis === 'x' ? 'W0' : 'U0'} to the first profile block) or G73.`,
+      );
+    }
+  }
   if (p.typeII) return roughTypeII(s, contour, poly, p, name, U, V, mk, cd, ld, extreme, warn);
 
   const out: CMove[] = [];
@@ -448,6 +520,7 @@ export function g73(
 ): CMove[] {
   const out: CMove[] = [];
   const n = Math.max(1, Math.round(divisions));
+  if (n > 200 || n * segs.length > 100000) throw new Error(`G73: R${n} roughing passes are far too many – R is the number of passes (e.g. R5)`);
   for (let k = 1; k <= n; k++) {
     const f = n === 1 ? 0 : (n - k) / (n - 1);
     const ox = reliefX * f + du / 2;

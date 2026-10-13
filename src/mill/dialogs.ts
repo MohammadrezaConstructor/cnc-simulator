@@ -27,7 +27,7 @@ export interface MillAppApi {
   loadExercise(ex: MillExercise): void;
   loadGenerated(code: string, stock: BlockStock, title: string): void;
   applyTools(t: MillTool[], o: Map<number, MillOffset>): void;
-  applyStock(s: BlockStock): void;
+  applyStock(s: BlockStock): boolean;
   setWorkZero(origin: BlockStock['origin'], zRef: 'finished' | 'raw'): boolean;
   applySettings(s: MillSettings, w: Record<number, V3>, reload: boolean): void;
   saveProgress(): void;
@@ -82,7 +82,7 @@ export function sanitizeMillExercise(o: unknown): MillExercise | null {
     briefText: String(x.briefText ?? '').slice(0, 5000),
     stock: {
       sizeX: s.sizeX, sizeY: s.sizeY, sizeZ: s.sizeZ,
-      origin: s.origin in ORIGIN_NAMES ? s.origin : 'corner',
+      origin: Object.hasOwn(ORIGIN_NAMES, s.origin) ? s.origin : 'corner',
       topAllowance: Math.max(0, +s.topAllowance || 0),
       zRef: s.zRef === 'raw' ? 'raw' : 'finished',
       material: (Object.keys(MATERIALS) as MaterialId[]).includes(s.material) ? s.material : 'aluminium',
@@ -290,7 +290,13 @@ export function millToolsDialog(app: MillAppApi) {
       }
       const upd = () => { if (id === sel) drawMillTool(preview, t); };
       const f = (k: keyof MillTool, attrs: Record<string, unknown> = {}) => num(t[k] as number, (v) => { (t as unknown as Record<string, number>)[k] = v; upd(); }, attrs);
-      rows.push(h('tr', { class: id === sel ? 'sel' : '', onclick: () => { if (sel !== id) { sel = id; render(); } } },
+      rows.push(h('tr', { class: id === sel ? 'sel' : '', onclick: (e: Event) => {
+        if (sel === id) return;
+        sel = id;
+        host.querySelectorAll('tr.sel').forEach((r) => r.classList.remove('sel'));
+        (e.currentTarget as HTMLElement).classList.add('sel');
+        drawMillTool(preview, t);
+      } },
         h('td', null, h('b', null, `T${String(id).padStart(2, '0')}`)),
         h('td', null, h('select', { onchange: (e: Event) => { t.type = (e.target as HTMLSelectElement).value as MillToolType; t.centerCutting = t.type !== 'face'; render(); } }, types.map((ty) => h('option', { value: ty, selected: ty === t.type }, MILL_TOOL_LABEL[ty])))),
         h('td', null, h('input', { type: 'text', value: t.name, oninput: (e: Event) => (t.name = (e.target as HTMLInputElement).value) })),
@@ -337,7 +343,10 @@ function workZeroSelects(d: BlockStock, onChange: () => void) {
 }
 
 /** small sketch of the block with the work zero: top view + front view */
-function workZeroSketch(d: BlockStock): SVGElement {
+function workZeroSketch(input: BlockStock): SVGElement {
+  // half-typed or invalid sizes must not produce negative SVG dimensions
+  const pos = (v: number, min: number) => (Number.isFinite(v) && v >= min ? v : min);
+  const d = { ...input, sizeX: pos(input.sizeX, 1), sizeY: pos(input.sizeY, 1), sizeZ: pos(input.sizeZ, 1), topAllowance: pos(input.topAllowance, 0) };
   const g = blockFrame(d);
   const W = 280, H = 150;
   const k = Math.min(140 / d.sizeX, 90 / d.sizeY, 40 / Math.max(1, d.sizeZ));
@@ -446,6 +455,8 @@ export function workZeroPopover(app: MillAppApi, anchor: HTMLElement) {
   };
   const esc = (e: KeyboardEvent) => {
     if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopImmediatePropagation();
       close();
       anchor.focus();
     }
@@ -458,7 +469,7 @@ export function workZeroPopover(app: MillAppApi, anchor: HTMLElement) {
     fill(pop,
       h('div', { class: 'pop-h' }, h('b', null, 'Work zero G54'), h('button', { class: 'icon', 'aria-label': 'Close', onclick: close }, '✕')),
       h('p', { class: 'muted small' }, 'Click a corner or the centre of the block top – G54 is set there, like probing the part on the machine.'),
-      workZeroPicker(d, (o) => { if (app.setWorkZero(o, zr)) render(); }),
+      workZeroPicker(d, (o) => { if (app.setWorkZero(o, zr)) { render(); (pop.querySelector('.wz-hit.on') as HTMLElement | null)?.focus(); } }),
       h('div', { class: 'pop-row' }, h('span', null, 'Z0 on the'), h('div', { class: 'seg small' }, zBtn('finished', 'finished top'), zBtn('raw', 'raw top'))),
       h('p', { class: 'muted small' }, d.zRef === 'raw'
         ? `Z0 = top of the raw block; the finished top is at Z-${d.topAllowance}.`
@@ -507,7 +518,13 @@ export function millStockDialog(app: MillAppApi) {
     body: h('div', null, form, sketchHost,
       h('p', { class: 'muted' }, 'The work zero G54 is set automatically to the chosen top corner (or the centre) of the block – like probing the part on the machine. Program X/Y from that corner: with a right or back corner the part lies in negative X or Y. With Z0 on the finished top the raw top is at Z+allowance and the face mill cuts at Z0; with Z0 on the raw top, the finished top is at Z−allowance. The vise clamps the Y sides; parallels support the Y edges underneath.')),
     size: 'narrow',
-    buttons: [{ label: 'Cancel' }, { label: 'Load new block', primary: true, onClick: () => { if (d.aboveJaws > d.sizeZ) { toast('The block cannot stick out more than its height', 'err'); return false; } app.applyStock(d); return true; } }],
+    buttons: [{ label: 'Cancel' }, { label: 'Load new block', primary: true, onClick: () => {
+      const bad = ([[d.sizeX, 10, 600, 'Size X'], [d.sizeY, 10, 400, 'Size Y'], [d.sizeZ, 3, 200, 'Height Z'], [d.topAllowance, 0, 10, 'Stock to face off'], [d.aboveJaws, 2, 200, 'Height above the jaws']] as const)
+        .find(([v, lo, hi]) => !Number.isFinite(v) || v < lo || v > hi);
+      if (bad) { toast(`${bad[3]} must be between ${bad[1]} and ${bad[2]} mm`, 'err'); return false; }
+      if (d.aboveJaws > d.sizeZ) { toast('The block cannot stick out more than its height', 'err'); return false; }
+      return app.applyStock(d);
+    } }],
   });
 }
 
@@ -537,7 +554,7 @@ export function millSettingsDialog(app: MillAppApi) {
       h('h4', null, 'Programming conventions'),
       h('p', { class: 'muted small' }, 'Automatic length: after M06 the control applies the new tool’s length (tool table length + H wear) by itself – Z always means the tool point, no G43 H… needed (an explicit G43/G49 still works). Automatic radius: G41/G42 without D use the tool’s radius + D wear. Nose-radius centre: for a ball mill Z is the ball centre (tip = Z − D/2), for bull-nose and face mills the corner-radius centre (tip = Z − R) – as CAM systems output “centre” code. Other tools use the tip. Examples and exercises are written for the standard settings (all off, tip).'),
       conv,
-      h('h4', null, 'Work coordinate systems'), h('p', { class: 'muted small' }, 'Shift of each work zero relative to G54 – e.g. a second part clamped next to the first.'), wo),
+      h('h4', null, 'Work coordinate systems'), h('p', { class: 'muted small' }, 'Shift of each work zero relative to G54 – e.g. a second part clamped next to the first.'), h('div', { class: 'table-scroll' }, wo)),
     size: 'narrow',
     buttons: [{ label: 'Cancel' }, { label: 'Apply', primary: true, onClick: () => app.applySettings(s, w, reload) }],
   });
@@ -654,6 +671,10 @@ export function millWizardDialog(app: MillAppApi) {
   });
   const blockLegend = () => `Block (X0 Y0 = ${ORIGIN_NAMES[st.origin]}, Z0 = ${st.zRef === 'raw' ? 'raw top' : 'finished top'}; feature depths are measured from the finished top)`;
   const legend = h('legend', null, blockLegend());
+  const sizeChanged = () => {
+    prevFrame = blockFrame(st);
+    ({ cx, cy } = centre());
+  };
   const adds = h('div', { class: 'row', style: { display: 'flex', gap: '6px', flexWrap: 'wrap' } },
     h('button', { onclick: () => addF({ kind: 'face', z: 0, tool: 1 }) }, '+ Face'),
     h('button', { onclick: () => addF({ kind: 'pocket', x: cx, y: cy, w: 30, l: 20, r: 5, depth: 5, step: 2.5, tool: 2 }) }, '+ Pocket'),
@@ -690,7 +711,7 @@ export function millWizardDialog(app: MillAppApi) {
     ctx.drawImage(tmp, 0, 0, b.nx * k, b.ny * k);
   };
   const stockRow = h('div', { class: 'wiz-row' },
-    field('Block X', st.sizeX, (v) => (st.sizeX = v)), field('Block Y', st.sizeY, (v) => (st.sizeY = v)), field('Block Z', st.sizeZ, (v) => (st.sizeZ = v)),
+    field('Block X', st.sizeX, (v) => { st.sizeX = v; sizeChanged(); }), field('Block Y', st.sizeY, (v) => { st.sizeY = v; sizeChanged(); }), field('Block Z', st.sizeZ, (v) => (st.sizeZ = v)),
     h('label', { class: 'wiz-f' }, h('span', null, 'Material'), h('select', { onchange: (e: Event) => (st.material = (e.target as HTMLSelectElement).value as MaterialId) }, (Object.keys(MATERIALS) as MaterialId[]).map((m) => h('option', { value: m, selected: m === st.material }, MATERIALS[m].name)))),
     h('label', { class: 'wiz-f' }, h('span', null, 'X0 Y0'), wz.origin),
     h('label', { class: 'wiz-f' }, h('span', null, 'Z0'), wz.zref),

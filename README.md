@@ -81,7 +81,7 @@ G12/G13 and other builder-specific pocket cycles are not included – the wizard
 ```bash
 npm install
 npm run dev        # dev server with hot reload
-npm test           # 107 tests (lathe + mill): interpreter, cycles, TNRC, every example and exercise end-to-end, fuzzing
+npm test           # 142 tests (lathe + mill): interpreter, cycles, TNRC, every example and exercise end-to-end, fuzzing
 npm run build      # type-check + single-file builds → dist/index.html (lathe) and dist/mill.html (mill)
 ```
 

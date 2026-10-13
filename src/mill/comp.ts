@@ -169,30 +169,34 @@ export function applyCutterComp(ops: MillOp[], comp: (MillComp | undefined)[], w
       continue;
     }
     const run: MillMove[] = [];
-    const between: MillOp[] = [];
+    // non-move ops inside the run (coolant, dwell, stops…) with their original index – they go back
+    // between the compensated moves in program ORDER (line numbers are not monotonic with M98)
+    const between: { op: MillOp; i: number }[] = [];
     let j = i;
     while (j < ops.length) {
       const o = ops[j];
       const c = comp[j];
       if (o.kind !== 'move') {
-        between.push(o);
+        between.push({ op: o, i: j });
         j++;
         continue;
       }
       if (!c || c.r <= 0 || c.side !== ci.side || c.r !== ci.r) break;
-      run.push(o);
+      run.push({ ...o, __i: j });
       j++;
     }
     if (j < ops.length && ops[j].kind === 'move') {
-      run.push({ ...(ops[j] as MillMove), __cancel: true });
+      run.push({ ...(ops[j] as MillMove), __cancel: true, __i: j });
       j++;
     }
     const processed = processRun(run, ci.r, ci.side, warn);
     for (const m of processed) {
-      while (between.length && between[0].line < m.line) out.push(between.shift()!);
+      const src = m.__i ?? Infinity;
+      while (between.length && between[0].i < src) out.push(between.shift()!.op);
+      delete m.__i;
       out.push(m);
     }
-    out.push(...between);
+    out.push(...between.map((b) => b.op));
     i = j;
   }
   return out;

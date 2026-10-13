@@ -14,6 +14,26 @@ import type { BlockModel } from './stock';
 
 const W = (x: number, y: number, z: number) => new THREE.Vector3(x, z, -y);
 
+/** free the GPU resources of an object tree before it is dropped (geometries, materials, textures) */
+function disposeTree(o: THREE.Object3D) {
+  if (o instanceof THREE.ArrowHelper) {
+    o.dispose(); // its geometries are shared by all arrows – only the materials are freed
+    return;
+  }
+  for (const c of o.children) disposeTree(c);
+  const m = o as THREE.Mesh;
+  m.geometry?.dispose();
+  const mats = Array.isArray(m.material) ? m.material : m.material ? [m.material] : [];
+  for (const mat of mats) {
+    (mat as THREE.MeshStandardMaterial).map?.dispose();
+    mat.dispose();
+  }
+}
+function clearGroup(g: THREE.Group) {
+  for (const c of g.children) disposeTree(c);
+  g.clear();
+}
+
 interface Chip {
   alive: boolean;
   p: THREE.Vector3;
@@ -45,6 +65,8 @@ export class MillView3D {
   private toolSpin = new THREE.Group();
   private toolKey = '';
   private pathLines: THREE.LineSegments | null = null;
+  private pathMat = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.7 });
+  private bottomMat = new THREE.MeshStandardMaterial({ color: 0x8a9099, metalness: 0.5, roughness: 0.5, side: THREE.DoubleSide });
   showPath = true;
   private visible = true;
   private angle = 0;
@@ -173,7 +195,7 @@ export class MillView3D {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
     g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
-    this.pathLines = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.7 }));
+    this.pathLines = new THREE.LineSegments(g, this.pathMat);
     this.pathLines.visible = this.showPath;
     this.scene.add(this.pathLines);
     this.forceRender = true;
@@ -186,7 +208,7 @@ export class MillView3D {
     const key = `${b.x0}|${b.y0}|${b.x1}|${b.y1}|${b.top}|${b.bottom}|${b.def.aboveJaws}`;
     if (key === this.fixtureKey) return;
     this.fixtureKey = key;
-    this.fixture.clear();
+    clearGroup(this.fixture);
     const v = viseGeometry(b);
     const steel = new THREE.MeshStandardMaterial({ color: 0x7a838e, metalness: 0.75, roughness: 0.35 });
     const dark = new THREE.MeshStandardMaterial({ color: 0x3b444f, metalness: 0.4, roughness: 0.6 });
@@ -217,14 +239,7 @@ export class MillView3D {
   }
 
   private rebuildWcs(size: number) {
-    for (const o of this.wcs.children) o.traverse((c) => {
-      const m = c as THREE.Mesh;
-      m.geometry?.dispose();
-      const mat = m.material as THREE.Material & { map?: THREE.Texture | null };
-      mat?.map?.dispose();
-      mat?.dispose();
-    });
-    this.wcs.clear();
+    clearGroup(this.wcs);
     const L = Math.max(18, Math.min(45, size * 0.3));
     const label = (text: string, color: string, at: THREE.Vector3, h: number) => {
       const c = document.createElement('canvas');
@@ -276,15 +291,17 @@ export class MillView3D {
   // ------------------------------------------------------------------ height field
 
   private buildGrid(b: BlockModel) {
-    const key = `${b.nx}|${b.ny}|${b.x0}|${b.y0}|${b.c}`;
+    const key = `${b.nx}|${b.ny}|${b.x0}|${b.y0}|${b.c}|${b.top}|${b.bottom}`;
     if (key === this.gridKey && this.surf) return false;
     this.gridKey = key;
+    // the shared materials (surface, skirt, bottom) are kept; only geometries are freed
     for (const m of [this.surf, this.skirt, this.bottom]) {
       if (m) {
         this.scene.remove(m);
         m.geometry.dispose();
       }
     }
+    this.skirt = null; // rebuilt (and added to the scene again) by buildSkirt
     const nx = b.nx, ny = b.ny;
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(nx * ny * 3), 3).setUsage(THREE.DynamicDrawUsage));
@@ -309,7 +326,7 @@ export class MillView3D {
     this.surf.frustumCulled = false;
     this.scene.add(this.surf);
     const bg = new THREE.PlaneGeometry(b.x1 - b.x0, b.y1 - b.y0).rotateX(Math.PI / 2);
-    this.bottom = new THREE.Mesh(bg, new THREE.MeshStandardMaterial({ color: 0x8a9099, metalness: 0.5, roughness: 0.5, side: THREE.DoubleSide }));
+    this.bottom = new THREE.Mesh(bg, this.bottomMat);
     this.bottom.position.copy(W((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, b.bottom));
     this.scene.add(this.bottom);
     return true;
@@ -423,7 +440,7 @@ export class MillView3D {
     const key = t ? JSON.stringify(t) : 'none';
     if (key === this.toolKey) return;
     this.toolKey = key;
-    this.head.clear();
+    clearGroup(this.head);
     this.toolSpin = new THREE.Group();
     this.head.add(this.toolSpin);
     const L = t ? t.length : 60;

@@ -261,8 +261,9 @@ class MillInterpreter {
     const st = this.st;
     const t = this.toolDef();
     if (this.cfg.settings.autoRadius && st.dReg === 0) return (t?.diameter ?? 0) / 2 + (this.cfg.offsets.get(st.tool)?.dw ?? 0);
-    const o = this.cfg.offsets.get(st.dReg);
-    return o ? o.d + o.dw : (t?.diameter ?? 0) / 2;
+    // D00 or an empty register: no offset – the tool centre runs on the programmed contour (Fanuc)
+    const o = st.dReg > 0 ? this.cfg.offsets.get(st.dReg) : undefined;
+    return o ? o.d + o.dw : 0;
   }
 
   private push(op: MillOp) {
@@ -453,6 +454,7 @@ class MillInterpreter {
     let motion: number | null = null;
     let cycleG: number | null = null;
     let nonModal: number | null = null;
+    let frameChanged = false; // work offset or rotation changed in this block
     for (const g of gs) {
       if (g <= 3) {
         if (motion !== null) this.diag(L, 'error', 'Two motion codes in one block');
@@ -469,7 +471,10 @@ class MillInterpreter {
       else if (g === 98 || g === 99) st.ret = g;
       else if (g === 15) st.polar = false;
       else if (g === 16) st.polar = true;
-      else if (g >= 54 && g <= 59) st.work = g;
+      else if (g >= 54 && g <= 59) {
+        if (st.work !== g) frameChanged = true;
+        st.work = g;
+      }
       else if (g === 49) {
         if (this.cfg.settings.autoLength) {
           // automatic mode: G49 only cancels an explicit G43/G44 – the tool's own length stays active
@@ -482,7 +487,10 @@ class MillInterpreter {
       else if (g === 40 || g === 41 || g === 42) {
         if (g !== 40 && st.plane !== 17) this.diag(L, 'error', 'Cutter compensation is only simulated in the G17 (XY) plane');
         st.comp = g as 40 | 41 | 42;
-      } else if (g === 69) st.rot.on = false;
+      } else if (g === 69) {
+        if (st.rot.on) frameChanged = true;
+        st.rot.on = false;
+      }
     }
     // ,C / ,R pending corner needs a G01 continuation
     if (this.corner) {
@@ -511,10 +519,14 @@ class MillInterpreter {
       st.needG43 = false;
       // the change of the length term moves Z: keep the programmed position, the next move picks it up
     } else if (has('H') && !gs.includes(49)) st.hReg = Math.round(w.H.value);
-    if (has('D')) st.dReg = Math.round(w.D.value);
+    if (has('D')) {
+      st.dReg = Math.round(w.D.value);
+      const o = this.cfg.offsets.get(st.dReg);
+      if (st.dReg > 0 && (!o || o.d + o.dw <= 0)) this.diag(L, 'warning', `Radius offset D${String(st.dReg).padStart(2, '0')} is empty – G41/G42 would not offset the tool`);
+    }
     if ((gs.includes(41) || gs.includes(42)) && !has('D') && st.dReg === 0) {
       if (this.cfg.settings.autoRadius) this.diag(L, 'info', `Automatic cutter radius: R${+this.compRadius().toFixed(3)} from tool T${String(st.tool).padStart(2, '0')} (no D needed)`);
-      else this.diag(L, 'warning', 'G41/G42 without D – no cutter radius known (D00)', 'Program D with the tool number (e.g. G41 D02), or switch on "automatic cutter radius" in Settings.');
+      else this.diag(L, 'warning', 'G41/G42 without D – D00 means no offset: the tool centre runs on the contour', 'Program D with the tool number (e.g. G41 D02), or switch on "automatic cutter radius" (AUTO TOOL COMP).');
     }
 
     // ---- F, S, T
@@ -568,8 +580,11 @@ class MillInterpreter {
     };
 
     let ctl: Ctl = {};
+    if (frameChanged) this.syncPos();
     if (gs.includes(68)) {
-      st.rot = { on: true, cx: has('X') ? val('X')! : 0, cy: has('Y') ? val('Y')! : 0, a: has('R') ? w.R.value : 0 };
+      // without X/Y the centre of rotation is the current position (Fanuc)
+      st.rot = { on: true, cx: has('X') ? val('X')! : st.pos.x, cy: has('Y') ? val('Y')! : st.pos.y, a: has('R') ? w.R.value : 0 };
+      this.syncPos();
       this.diag(L, 'info', `G68: coordinates rotated by ${st.rot.a}° about X${st.rot.cx} Y${st.rot.cy}`);
     } else if (nonModal === 4) {
       const sec = has('P') ? (w.P.hasDecimal ? w.P.value : w.P.value / 1000) : has('X') ? w.X.value : 0;
@@ -595,6 +610,7 @@ class MillInterpreter {
       this.emitSimRapid(tip, L, 'G53 machine-coordinate move');
     } else if (nonModal === 52) {
       st.local = { x: has('X') ? val('X')! : 0, y: has('Y') ? val('Y')! : 0, z: has('Z') ? val('Z')! : 0 };
+      this.syncPos();
       this.diag(L, 'info', `G52 local coordinate system: origin shifted by X${st.local.x} Y${st.local.y} Z${st.local.z}`);
     } else if (cycleG !== null || (st.cyc && (has('X') || has('Y')))) {
       ctl = this.cycle(cycleG, w, val, L);
@@ -604,6 +620,7 @@ class MillInterpreter {
       if (has('R')) c.r = st.abs ? val('R')! : c.initZ + val('R')!;
       if (has('Z')) c.z = st.abs ? val('Z')! : c.r + val('Z')!;
       if (has('Q')) c.q = Math.abs(w.Q.hasDecimal ? val('Q')! : w.Q.value / 1000);
+      if (has('P')) c.p = w.P.hasDecimal ? w.P.value : w.P.value / 1000;
     } else if (axisWords || (st.motion >= 2 && (has('I') || has('J') || has('K')))) {
       this.motion(w, val, target(), L);
     }
@@ -665,8 +682,22 @@ class MillInterpreter {
     };
     this.push(op);
     st.tip = { ...tip };
+    this.syncPos();
+  }
+
+  /** re-express the current tool position in the active program frame (after G52, G54–G59, G68/G69,
+   *  home returns): axes that the next block does not program must not move */
+  syncPos() {
+    const st = this.st;
     const s = this.shift();
-    st.pos = { x: tip.x - s.x, y: tip.y - s.y, z: this.fromSimZ(tip.z) };
+    let x = st.tip.x - s.x, y = st.tip.y - s.y;
+    const r = st.rot;
+    if (r.on) {
+      const a = (-r.a * Math.PI) / 180, dx = x - r.cx, dy = y - r.cy;
+      x = r.cx + dx * Math.cos(a) - dy * Math.sin(a);
+      y = r.cy + dx * Math.sin(a) + dy * Math.cos(a);
+    }
+    st.pos = { x, y, z: this.fromSimZ(st.tip.z) };
   }
 
   private toolChange(L: number) {
@@ -812,13 +843,12 @@ class MillInterpreter {
       if (st.comp !== 40) this.diag(L, 'warning', 'Canned cycle with cutter compensation active – cancel with G40 first');
       const prev = st.cyc;
       const initZ = prev ? prev.initZ : st.pos.z;
-      const rIn = has('R') ? val('R')! : prev?.r;
-      const zIn = has('Z') ? val('Z')! : prev?.z;
-      if (rIn === undefined) throw new Error(`G${g} needs R (R-plane, the safe height above the part)`);
-      if (zIn === undefined) throw new Error(`G${g} needs Z (hole depth)`);
-      // G91: R from the initial level, Z from the R-plane
-      const r = st.abs ? rIn : initZ + rIn;
-      const z = st.abs ? zIn : r + zIn;
+      // inherited R/Z are stored as absolute values; G91 only applies to words in this block
+      // (R from the initial level, Z from the R-plane)
+      const r = has('R') ? (st.abs ? val('R')! : initZ + val('R')!) : prev?.r;
+      if (r === undefined) throw new Error(`G${g} needs R (R-plane, the safe height above the part)`);
+      const z = has('Z') ? (st.abs ? val('Z')! : r + val('Z')!) : prev?.z;
+      if (z === undefined) throw new Error(`G${g} needs Z (hole depth)`);
       const q = has('Q') ? Math.abs(w.Q.hasDecimal ? val('Q')! : (w.Q.value / 1000) * (st.inch ? 25.4 : 1)) : prev?.g === g ? prev.q : 0;
       const p = has('P') ? (w.P.hasDecimal ? w.P.value : w.P.value / 1000) : prev?.g === g ? prev.p : 0;
       st.cyc = { g, r, z, q, p, initZ };
@@ -843,22 +873,19 @@ class MillInterpreter {
       if (r < z) this.diag(L, 'warning', 'R-plane below the hole depth?');
     }
     const cyc = st.cyc!;
+    if (g === null) {
+      // a later hole block may change the cycle data too (e.g. "X30. Z-20.")
+      if (has('R')) cyc.r = st.abs ? val('R')! : cyc.initZ + val('R')!;
+      if (has('Z')) cyc.z = st.abs ? val('Z')! : cyc.r + val('Z')!;
+      if (has('Q')) cyc.q = Math.abs(w.Q.hasDecimal ? val('Q')! : (w.Q.value / 1000) * (st.inch ? 25.4 : 1));
+      if (has('P')) cyc.p = w.P.hasDecimal ? w.P.value : w.P.value / 1000;
+      if (cyc.z >= cyc.r) this.diag(L, 'error', `G${cyc.g}: Z${cyc.z} is not below the R-plane R${cyc.r}`);
+    }
     const reps = has('K') ? Math.max(0, Math.round(w.K.value)) : has('L') ? Math.max(0, Math.round(w.L.value)) : 1;
-    // hole position
-    const xy0 = { ...st.pos };
+    // hole position: K repeats the same hole in G90, and steps by X/Y (or the polar angle) in G91
+    const first = this.targetXY(w, val, st.pos);
     for (let k = 0; k < reps; k++) {
-      let x = xy0.x, y = xy0.y;
-      if (k === 0) {
-        const t = this.targetXY(w, val, xy0);
-        x = t.x;
-        y = t.y;
-      } else {
-        x = st.pos.x + (has('X') ? val('X')! : 0);
-        y = st.pos.y + (has('Y') ? val('Y')! : 0);
-      }
-      if (!st.abs && cyc.r > st.pos.z && k === 0 && g !== null) {
-        /* G91 R relative to initial – already resolved */
-      }
+      const { x, y } = k === 0 || st.abs ? first : this.targetXY(w, val, st.pos);
       const steps = holeSteps({
         g: cyc.g, x, y, zNow: st.pos.z, r: cyc.r, z: cyc.z, q: cyc.q, p: cyc.p,
         ret: st.ret === 98 ? cyc.initZ : cyc.r, d: cyc.g === 73 ? 0.5 : 1, dir: st.dir === 'ccw' ? 'ccw' : 'cw',
@@ -899,6 +926,9 @@ class MillInterpreter {
 export function interpretMill(src: string, cfg: MillConfig, init?: MillState): MillResult {
   const blocks = lexProgram(src);
   const it = new MillInterpreter(blocks, cfg, init ?? millDefaultState(cfg.settings, cfg.tools));
+  // the default state only knows the tool tip at home – derive the programmed position from it
+  // (length compensation, nose-centre point, work offset)
+  if (!init) it.syncPos();
   it.run();
   return it.finish();
 }

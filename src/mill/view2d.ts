@@ -16,6 +16,11 @@ interface PathItem {
 }
 
 const css = (n: string) => getComputedStyle(document.documentElement).getPropertyValue(n).trim() || '#888';
+/** canvas fonts cannot use CSS variables – resolve the page's font stacks once */
+const FONT = {
+  mono: getComputedStyle(document.documentElement).getPropertyValue('--mono').trim() || 'ui-monospace, Consolas, monospace',
+  sans: getComputedStyle(document.documentElement).getPropertyValue('--sans').trim() || 'system-ui, sans-serif',
+};
 const hex = (s: string): [number, number, number] => {
   const m = /^#?([0-9a-f]{6})$/i.exec(s.trim());
   if (!m) return [128, 128, 128];
@@ -338,7 +343,7 @@ export class MillView2D {
       ctx.stroke();
     }
     ctx.fillStyle = C['--v-text'];
-    ctx.font = '10px var(--mono, monospace)';
+    ctx.font = `10px ${FONT.mono}`;
     const [la, lb] = this.mode === 'top' ? ['X', 'Y'] : this.mode === 'front' ? ['X', 'Z'] : ['Y', 'Z'];
     const dec = major < 1 ? 1 : 0;
     ctx.textBaseline = 'top';
@@ -386,7 +391,7 @@ export class MillView2D {
     ctx.stroke();
     ctx.setLineDash([]);
     ctx.fillStyle = C['--v-text'];
-    ctx.font = '10px var(--sans, sans-serif)';
+    ctx.font = `10px ${FONT.sans}`;
     ctx.fillText('A–A (front section)', this.sx(b.x1 + 2), this.sy(this.secY) - 4);
     ctx.fillText('B–B (side)', this.sx(this.secX) + 4, this.sy(b.y1 + 6));
   }
@@ -467,7 +472,7 @@ export class MillView2D {
     ctx.lineWidth = 1.2;
     ctx.stroke();
     ctx.fillStyle = C['--v-text'];
-    ctx.font = '11px var(--sans, sans-serif)';
+    ctx.font = `11px ${FONT.sans}`;
     ctx.fillText(this.mode === 'front' ? `Section A–A at Y${this.secY.toFixed(1)}` : `Section B–B at X${this.secX.toFixed(1)}`, 12, 40);
   }
 
@@ -535,7 +540,7 @@ export class MillView2D {
       ctx.lineTo(x2 - Math.cos(a + 0.45) * 9, y2 - Math.sin(a + 0.45) * 9);
       ctx.closePath();
       ctx.fill();
-      ctx.font = 'bold 11px var(--mono, monospace)';
+      ctx.font = `bold 11px ${FONT.mono}`;
       ctx.fillText(label, x2 + (a === 0 ? 7 : -4), y2 + (a === 0 ? 4 : -7));
     };
     arrow(X + L, Y, AX[ha], ha + '+');
@@ -556,7 +561,7 @@ export class MillView2D {
     ctx.arc(X, Y, 7, Math.PI / 2, Math.PI);
     ctx.closePath();
     ctx.fill();
-    ctx.font = 'bold 10px var(--sans, sans-serif)';
+    ctx.font = `bold 10px ${FONT.sans}`;
     ctx.fillText(this.mode === 'top' ? 'G54  X0 Y0' : this.mode === 'front' ? 'G54  X0 Z0' : 'G54  Y0 Z0', X + 10, Y + 16);
   }
 
@@ -624,7 +629,7 @@ export class MillView2D {
     ctx.moveTo(x0, 18);
     ctx.lineTo(x0 + L, 18);
     ctx.stroke();
-    ctx.font = '10px var(--mono, monospace)';
+    ctx.font = `10px ${FONT.mono}`;
     ctx.fillText(`${step} mm`, x0, 32);
     if (this.hover) {
       let t: string;
@@ -632,7 +637,7 @@ export class MillView2D {
         const hz = this.machine.block.heightAt(this.hover.a, this.hover.b);
         t = `X${this.hover.a.toFixed(3)}  Y${this.hover.b.toFixed(3)}${hz !== null ? `  surface Z${hz.toFixed(3)}` : ''}`;
       } else t = `${this.mode === 'front' ? 'X' : 'Y'}${this.hover.a.toFixed(3)}  Z${this.hover.b.toFixed(3)}`;
-      ctx.font = '12px var(--mono, monospace)';
+      ctx.font = `12px ${FONT.mono}`;
       const w = ctx.measureText(t).width;
       ctx.fillStyle = C['--v-bg'];
       ctx.globalAlpha = 0.85;

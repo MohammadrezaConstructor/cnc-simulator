@@ -166,6 +166,9 @@ describe('examples run cleanly on the simulated machine', () => {
       const { r, m, stock } = runProgram(ex.code, ex.stock);
       const errs = r.diags.filter((d) => d.severity === 'error');
       expect(errs, JSON.stringify(errs)).toEqual([]);
+      // reference programs must not show students any warning either
+      const warns = r.diags.filter((d) => d.severity === 'warning');
+      expect(warns, JSON.stringify(warns)).toEqual([]);
       const alarms = m.events.filter((e) => e.type === 'alarm');
       expect(alarms, JSON.stringify(alarms)).toEqual([]);
       expect(m.status).toBe('done');

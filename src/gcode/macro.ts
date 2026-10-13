@@ -126,7 +126,11 @@ export function evalExpr(src: string, vars: Vars): number | null {
           if (a < 0) throw new Error('Macro: SQRT of a negative number');
           return Math.sqrt(a);
         case 'ABS': return Math.abs(a);
-        case 'ROUND': return Math.round(a);
+        // Fanuc rounds halves away from zero (ROUND[-2.5] = -3); Math.round goes towards +∞
+        case 'ROUND': {
+          const r = Math.sign(a) * Math.round(Math.abs(a));
+          return r === 0 ? 0 : r; // no -0
+        }
         case 'FIX': return Math.trunc(a);
         case 'FUP': return a >= 0 ? Math.ceil(a) : Math.floor(a);
         case 'LN':
